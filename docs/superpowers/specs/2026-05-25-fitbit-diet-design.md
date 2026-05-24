@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（codex review 反映, rev 2）
+- 最終更新: 2026-05-25（codex review 反映, rev 3）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -47,9 +47,14 @@
 このプロファイルでは:
 ```
 BMR = 10 × 体重 + 6.25 × 169 − 5 × 年齢 + 5
-    = 10 × 体重 + 836.25 − 5 × (年齢 − 0)
+    = 10 × 体重 + 1056.25 − 5 × 年齢 + 5
+    = 10 × 体重 − 5 × 年齢 + 1061.25
 ```
 例: 体重 70kg, 年齢 46 歳 → 700 + 1056.25 − 230 + 5 = 1531 kcal/日
+
+**実装時の定数（コピペ防止のため明示）:**
+- `HEIGHT_TERM = 6.25 * 169 = 1056.25`
+- 計算は `bmr = 10 * weight + 1056.25 - 5 * age + 5` を式そのまま書く（定数を畳まない）
 
 **重要:**
 - **年齢は対象日 (Asia/Tokyo) 基準**。`bmr(target_date, body_weight, birthday, height)` のような純粋関数で実装し、内部で対象日を Asia/Tokyo 解釈して差分を計算する
@@ -81,11 +86,11 @@ Fitbit デバイスは 24 時間装着しない前提のため、Fitbit が出�
 
 採用候補（優先順）:
 
-1. **`activities[].calories`（明示的に記録された運動エントリの合計）** — 最も意味が明確。ただし「散歩」「掃除」などをユーザーが手で記録しない限り 0 になる
-2. **`summary.marginalCalories`** — Fitbit の中で「基礎代謝を引いた、活動由来っぽい消費」に最も近い。装着していない時間が長いとノイズが乗る
-3. **`summary.steps × 体重 × 係数` で独自算出** — 装着精度に依存しすぎる場合の fallback
+1. **`summary.marginalCalories`（デフォルト）** — Fitbit の中で「基礎代謝を引いた、活動由来っぽい消費」に最も近い。装着していない時間が長いとノイズが乗るが、構造的に基礎代謝を含まないので二重計上リスクが最小。`exercise_calorie_source` が未確定のあいだは **デフォルトで marginal を使う**
+2. **`activities[].calories`** — ユーザーが明示的に記録した運動エントリの合計。意味は明確だが、運動時間中の resting burn（基礎代謝分）を含む可能性があり、未補正だと部分的に二重計上になる。採用する場合は運動時間 × 時間当たり BMR を引いて補正するか、calibrate で実測比較した上で許容する
+3. **`summary.steps × 体重 × 係数` で独自算出** — 装着精度に依存しすぎる場合の最終 fallback
 
-**MVP は `activities[].calories` + `marginalCalories` の両方を取得して DB に保存**し、`diet calibrate` コマンド（§ 8）で数日分を並べて表示し、ユーザーがどれを `exercise_kcal` の正式値とするか判断する。判断後は config に `exercise_calorie_source` を保存して以降そちらを使う。
+**MVP は `marginalCalories` と `activities[].calories` の両方を取得して DB に保存**し、`diet calibrate` コマンド（§ 8）で数日分を並べて表示。ユーザーが calibrate で source を確定するまでは marginal を使う。確定後は config に `exercise_calorie_source` を保存して以降そちらを使う。
 
 ---
 
@@ -217,12 +222,45 @@ fitbit_token (
 }
 ```
 
-**公開フィールドの allowlist 2 層防衛（codex Medium-2 対応）:**
+**公開フィールドの allowlist 2 層防衛（codex Medium-2 対応, rev3 で厳密化）:**
 
-1. **typed DTO 層** — `publish.py` 内で `@dataclass class PublicDayRecord` を定義し、`date / steps / distance_km / exercise_kcal / weight_kg` のみフィールドに持たせる。DB から DTO への変換は明示的にこの 5 フィールドだけを SELECT して詰める
-2. **JSON schema guard 層** — `log.json` 書き出し直前に `jsonschema` でバリデーション。`additionalProperties: false`、`required: [date, steps, distance_km, exercise_kcal, weight_kg]` で他フィールドが混入したら例外で停止
+1. **typed DTO 層** — `publish.py` 内で `@dataclass class PublicDayRecord` を定義し、`date / steps / distance_km / exercise_kcal / weight_kg` のみフィールドに持たせる。DB から DTO への変換は明示的にこの 5 フィールドだけを SELECT して**手で詰める**
+2. **JSON schema guard 層** — `log.json` 書き出し直前に `jsonschema` でバリデーション
 
-`updated_at` はトップレベル 1 個のみ、JSON 全体が「最終生成時刻」を持つ。これは公開して問題ない情報と判断（ユーザー本人の公開意図）。
+**DTO → JSON 変換契約（実装時の禁則事項）:**
+- `dataclasses.asdict()` / `__dict__` / `row._asdict()` 等の自動シリアライズを **使わない**。手書きの `to_public_dict()` メソッドで 5 フィールドだけを dict に詰める
+- 既存 `log.json` の merge は、読み込んだ既存 entry も同じ DTO で再正規化してから merge する（生 dict のまま merge しない）
+- 書き出し直前の payload を bytes 化する前に、final dict で schema バリデーションを実施
+
+**JSON schema 仕様:**
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["updated_at", "days"],
+  "properties": {
+    "updated_at": {"type": "string", "format": "date-time"},
+    "days": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "steps", "distance_km", "exercise_kcal", "weight_kg"],
+        "properties": {
+          "date":          {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+          "steps":         {"type": "integer", "minimum": 0},
+          "distance_km":   {"type": "number", "minimum": 0},
+          "exercise_kcal": {"type": "integer", "minimum": 0},
+          "weight_kg":     {"type": "number", "minimum": 0}
+        }
+      }
+    }
+  }
+}
+```
+
+`additionalProperties: false` を **top level と days.items の両方** に明記。`updated_at` はトップレベル 1 個のみ、JSON 全体が「最終生成時刻」を持つ。これは公開して問題ない情報と判断（ユーザー本人の公開意図）。
 
 **git 履歴の不可逆性:** 一度 push した体重等は git history に永久に残る。ロールバックしたければ push 前の段階で訂正する。push 後の訂正は新 commit になり、過去 commit には残り続けることをユーザーは認識しておく。
 
@@ -233,7 +271,13 @@ cd <hpasaneel_path>
 git status --porcelain content/diet/log.json    # log.json に手動変更が無いか確認
 # 手動変更があれば対話で「上書きしますか? [y/N]」、no なら publish 中止
 git pull --rebase                                # リモートとの差分取り込み
-# diet コマンドが log.json を再生成（pull で取れた最新内容に merge する形）
+
+# ★重要: diet は pull 後の log.json をディスクから読み込み直し、
+#       対象日 entry のみを差し替えて再書き出しする。
+#       リモートで他端末/別プロセスが追加した「新しい日付の entry」を絶対消さない。
+#       読み込み時も再正規化（DTO 経由）を経るので、未知フィールドが混入した
+#       ファイルは schema validation 段階で停止する。
+
 # stage は log.json のみ限定指定
 git add content/diet/log.json
 git commit -m "diet: 2026-05-25 update"
@@ -242,7 +286,8 @@ git push          # → Cloudflare Pages auto deploy
 
 - **HPasaneel に他の未コミット変更がある場合** → log.json 以外には触らない（`git add .` は禁止）。確認プロンプトを出す
 - **`pull --rebase` 失敗** → 手動解決を促して終了
-- **同じ日の再 publish** → log.json の該当 entry を上書き、commit メッセージは `diet: 2026-05-25 update (rev N)`
+- **同じ日の再 publish** → log.json の該当 entry を上書き、他日 entry は保持、commit メッセージは `diet: 2026-05-25 update (rev N)`
+- **過去日 publish (`--date`)** → 該当日 entry のみ差し替え、他日に影響なし
 
 ### HPasaneel 側ダッシュボードページ（本プロジェクトで一緒に実装）
 
@@ -323,7 +368,7 @@ C:/code/fitbit連動ダイエット/
     diet/
       __init__.py
       __main__.py        # diet コマンド本体（対話フロー orchestrator）
-      cli.py             # click/typer 定義（diet / diet init / diet calibrate / diet auth）
+      cli.py             # click/typer 定義（下記コマンド一覧参照）
       fitbit_client.py   # Fitbit Web API ラッパー + rate limit tracking
       oauth.py           # OAuth フロー + localhost callback server + atomic token rotation
       bmr.py             # BMR 計算（純粋関数、target_date 引数で過去日対応）
@@ -354,6 +399,19 @@ C:/code/HPasaneel/
   package.json           # recharts 依存追加
 ```
 
+### CLI コマンド一覧（rev3 で `diet weight` 追加）
+
+| コマンド | 役割 |
+|---|---|
+| `diet` | 1 日分の対話フロー（Fitbit sync → 食事入力 → 収支 → publish） |
+| `diet --date 2026-05-23` | 過去日対象で対話フロー実行 |
+| `diet init` | 初期セットアップ（profile + OAuth + 初回 sync） |
+| `diet auth` | OAuth token を再取得（refresh 完全失敗時の復旧） |
+| `diet calibrate` | Fitbit カロリー候補を並べて `exercise_calorie_source` を決定 |
+| `diet weight 71.2` | 体重を手動入力（Renpho 同期不全時の fallback、当日 or `--date` 指定可） |
+| `diet sync` | Fitbit sync のみ実行（対話なし、cron 用） |
+| `diet show [--date YYYY-MM-DD]` | 指定日（デフォルト今日）の収支を表示のみ（食事入力・publish なし） |
+
 ---
 
 ## 10. 依存ライブラリ
@@ -378,8 +436,8 @@ C:/code/HPasaneel/
 
 | 状況 | 動作 |
 |---|---|
-| Fitbit token 期限切れ | refresh token で自動更新、**新 token を DB に保存できてから API call**（single-use token rotation 対応）。401 の自動 retry は **1 回のみ** |
-| token rotation 中のプロセス crash | DB 書き込みを SQLite transaction で atomic 化。crash 時は古い refresh token が残るので次回 refresh で再リトライ、それも失敗したら `diet auth` 再認証案内 |
+| Fitbit token 期限切れ | refresh token で自動更新、**新 token を DB に commit してから API call** に進む（single-use token rotation 対応）。401 の自動 retry は **1 回のみ** |
+| token rotation 中のプロセス crash | 完全には防げないが緩和: (1) DB 書き込みを `BEGIN IMMEDIATE` transaction で atomic 化、(2) refresh 開始前に `flock` 相当のプロセスロック取得で並列 refresh 防止、(3) crash で新 refresh token を失った時は次回起動で `diet auth` 再認証を促す（古い single-use token は既に Fitbit 側で無効化されてる前提）|
 | ネットワーク失敗 | Fitbit sync をスキップして警告、食事入力には進む（オフライン耐性）。publish もスキップ |
 | Fitbit Rate Limit (150/h) | リクエスト数を自前カウント、`Fitbit-Rate-Limit-Reset` ヘッダを尊重。429 受領時は次回 reset まで sync 待機（食事入力は通常通り）|
 | 当日体重が Renpho 未同期 | **対象日以前**の最新体重を使う（タイムマシン禁止）、「N 日前 (71.5kg) を使用」と警告 |
@@ -403,13 +461,24 @@ C:/code/HPasaneel/
 - **`bmr.py`** — 純粋関数なので網羅的ユニットテスト
   - 過去日入力時の年齢計算（生年月日跨ぎを含む）
   - Asia/Tokyo と UTC の境界日テスト
+  - **必須テストケース** (birthday=1979-12-01):
+    - `target_date=2026-11-30` → 年齢 46
+    - `target_date=2026-12-01` → 年齢 47（誕生日当日で 1 歳加算）
+    - `target_date=2026-12-02` → 年齢 47
+    - `target_date=1979-12-01` → 年齢 0
+    - UTC で日付跨ぎでも Asia/Tokyo で同じ日なら同じ年齢を返すこと
+  - BMR 定数の検算: 体重 70.0 / 年齢 46 → `bmr == 1531.25`（小数 2 桁まで）
 - **`publish.py`** — 公開境界の二重担保:
   - **境界テスト**: `intake_events` に多様なデータを insert → publish 実行 → log.json に食事系フィールドが**絶対出ない**ことを diff で検証
   - **schema guard テスト**: 余計なフィールドを持つ DTO を渡したら例外で停止することを確認
   - 公開フィールドが `date / steps / distance_km / exercise_kcal / weight_kg` の 5 個のみであることを assert
+- **`publish.py`** — DTO 変換契約:
+  - `to_public_dict()` が 5 フィールドだけ返すこと、余計なフィールドを混入させても DTO 経由で削られること
+  - 既存 log.json を merge するとき、未知フィールドが含まれてたら schema 段階で例外
 - **`oauth.py`** — token rotation:
-  - refresh 成功時の DB 保存が atomic（部分書き込みで壊れない）
-  - rotation 中の crash 後の再起動で正しい復旧パス
+  - refresh 成功時の DB 保存が atomic（部分書き込みで壊れない、`BEGIN IMMEDIATE`）
+  - rotation 中の crash 後の再起動で正しい復旧パス（`diet auth` 案内）
+  - 並列 `diet` 実行でも同時 refresh が起きないこと（プロセスロック動作）
 - **`fitbit_client.py`** — httpx mock で OAuth・rate limit・API レスポンス処理
 - **`db.py`** — テンポラリ SQLite でスキーマ migration テスト
 - 全体結合テストは VCR.py のような HTTP リプレイで（実 API は叩かない）
@@ -437,8 +506,9 @@ C:/code/HPasaneel/
 
 ---
 
-## 付録 A: codex review 反映ログ（rev 2, 2026-05-25）
+## 付録 A: codex review 反映ログ
 
+### rev 2 (2026-05-25)
 | codex 指摘 | 反映場所 |
 |---|---|
 | HIGH: `activityCalories` は BMR 含む、二重計上の罠 | § 4 重要な仕様、§ 6 DB スキーマ（候補 2 列保存）、§ 8 calibrate コマンド新設 |
@@ -448,3 +518,15 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 3 (2026-05-25)
+| codex 指摘 | 反映場所 |
+|---|---|
+| HIGH: §3 BMR の `6.25 × 169 = 836.25` typo（正: `1056.25`）| § 3 数式を修正、定数明示で再発防止 |
+| `marginalCalories` を safer default に | § 4 採用候補の優先順を marginal トップに変更・「未確定時 marginal を使う」明記 |
+| `activities[].calories` は運動中 resting burn 二重計上の可能性 | § 4 候補 2 の説明に補正方針追記 |
+| Publish 変換契約の厳密化（`__dict__` 等禁止、両層 `additionalProperties: false`）| § 7 「DTO → JSON 変換契約」追加、JSON schema 全文掲載 |
+| Age 境界の test case 不足 | § 12 BMR テストに 4 cases 明記 |
+| Token rotation の HTTP→DB 間 crash | § 11 token 行: `BEGIN IMMEDIATE` + プロセスロック明記 |
+| Git: 再生成は post-pull の log.json を読み直して対象日のみ差し替え | § 7 git シーケンスにコメント追加 |
+| MVP gap: `diet weight` が CLI 一覧にない | § 9 CLI コマンド一覧表を新設し `diet weight` 含む 8 コマンドを明記 |
