@@ -87,11 +87,16 @@ def _run_initial_sync(conn, days: int) -> None:
 @click.option("--regen-cert", is_flag=True, help="証明書を再生成 (期限切れ時)")
 def auth(port: int, regen_cert: bool) -> None:
     """Re-run OAuth (without re-prompting profile)."""
+    from diet.db import load_config
     from diet.oauth import generate_self_signed_cert, run_init_flow
 
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     conn = open_db(data_dir / "diet.db")
+    if load_config(conn) is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
     if regen_cert:
         cert = data_dir / "oauth_cert.pem"
         key = data_dir / "oauth_key.pem"
