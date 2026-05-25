@@ -499,3 +499,63 @@ def test_orchestrator_push_failure_shows_manual_resolution_message(
     full = captured.out + captured.err
     assert "手動" in full or "manually" in full.lower() or "pull --rebase" in full
     assert "pull --rebase" in exc.value.message
+
+
+# --- Task 9.10: cert validity period + regen via CLI ----------------------
+
+
+def test_cert_validity_period(tmp_path):
+    """生成した cert の not_valid_after が指定日数後であること."""
+    from datetime import timezone
+
+    from cryptography import x509
+
+    from diet.oauth import generate_self_signed_cert
+
+    cert_path = tmp_path / "c.pem"
+    key_path = tmp_path / "k.pem"
+    generate_self_signed_cert(cert_path, key_path, "localhost", days_valid=3650)
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    expected = datetime.now(timezone.utc) + timedelta(days=3650)
+    delta = abs((cert.not_valid_after_utc - expected).total_seconds())
+    assert delta < 60  # 生成タイミングのズレ許容
+
+
+def test_generate_idempotent_when_both_exist(tmp_path):
+    """既存ファイルがあれば上書きしない (no-op)."""
+    from diet.oauth import generate_self_signed_cert
+
+    cert_path = tmp_path / "c.pem"
+    key_path = tmp_path / "k.pem"
+    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
+    original_cert = cert_path.read_bytes()
+    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
+    assert cert_path.read_bytes() == original_cert  # idempotent
+
+
+def test_cli_auth_regen_cert_replaces_files(tmp_path, monkeypatch, mocker):
+    """`diet auth --regen-cert` で既存 cert/key を削除して再生成 → 内容が変わる."""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import Config, open_db, save_config
+
+    conn = open_db(tmp_path / "diet.db")
+    save_config(
+        conn,
+        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
+    )
+    from diet.oauth import generate_self_signed_cert
+
+    cert = tmp_path / "oauth_cert.pem"
+    key = tmp_path / "oauth_key.pem"
+    generate_self_signed_cert(cert, key, "localhost", 3650)
+    original_bytes = cert.read_bytes()
+    # OAuth flow body is mocked — we only verify the CLI regenerates cert.
+    spy = mocker.patch("diet.oauth.run_init_flow", return_value=None)
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth", "--regen-cert"])
+    assert result.exit_code == 0, result.output
+    assert cert.exists()
+    assert cert.read_bytes() != original_bytes
+    spy.assert_called_once()
