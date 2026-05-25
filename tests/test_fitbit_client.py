@@ -21,3 +21,28 @@ async def test_get_weight_log(httpx_mock):
     client = FitbitClient(access_token="A1")
     weights = await client.get_weight_log("2026-05-25")
     assert weights[0]["weight"] == 71.2
+
+
+async def test_401_triggers_one_refresh(httpx_mock):
+    httpx_mock.add_response(url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json", status_code=401)
+    httpx_mock.add_response(url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json", json={"summary": {"steps": 100}})
+    calls = {"n": 0}
+    async def refresh():
+        calls["n"] += 1
+        return "A2"
+    client = FitbitClient(access_token="A1", on_unauthorized=refresh)
+    data = await client.get_activity_summary("2026-05-25")
+    assert calls["n"] == 1
+    assert client.access_token == "A2"
+
+
+async def test_401_twice_raises(httpx_mock):
+    """refresh しても 401 が続く → 例外 (無限ループ防止)"""
+    httpx_mock.add_response(url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json", status_code=401)
+    httpx_mock.add_response(url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json", status_code=401)
+    async def refresh():
+        return "A2"
+    client = FitbitClient(access_token="A1", on_unauthorized=refresh)
+    import httpx
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_activity_summary("2026-05-25")
