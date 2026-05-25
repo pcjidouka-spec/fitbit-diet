@@ -722,3 +722,46 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     # The per-day Exception handler must NOT have swallowed the failure into
     # a misleading "sync complete" line.
     assert "sync complete" not in result.output
+
+
+def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
+    tmp_path, monkeypatch, httpx_mock
+):
+    """Codex follow-up P2: when the token endpoint fails at the network
+    layer (timeout / DNS / connection refused), the per-day catch must not
+    swallow it into ``sync complete``. ``httpx.RequestError`` has no
+    response body and cannot be ``invalid_grant``, so it must surface as
+    transient (not as a ``diet auth`` prompt)."""
+    import re
+
+    import httpx
+
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import Config, Token, open_db, save_config, save_token_atomic
+
+    conn = open_db(tmp_path / "diet.db")
+    save_config(
+        conn,
+        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
+    )
+    save_token_atomic(conn, Token("STALE", "R", datetime(2030, 1, 1), "UID"))
+
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.fitbit\.com/1/user/-/activities/date/.*\.json"),
+        status_code=401,
+        json={"errors": [{"errorType": "expired_token"}]},
+    )
+    # Token endpoint: raise a transport-level error before any response.
+    httpx_mock.add_exception(
+        httpx.ConnectTimeout("token endpoint timed out"),
+        url="https://api.fitbit.com/oauth2/token",
+        method="POST",
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync", "--days", "1"])
+    assert result.exit_code != 0, result.output
+    assert "diet auth" not in result.output
+    assert "transient" in result.output.lower() or "一時的" in result.output
+    assert "sync complete" not in result.output

@@ -84,6 +84,12 @@ async def run_sync_async(conn, days: int):
             if _is_invalid_grant(e):
                 raise RefreshTokenError(str(e)) from e
             raise TransientRefreshError(str(e)) from e
+        except httpx.RequestError as e:
+            # Network-level failure (timeout, DNS, connection refused). Has
+            # no ``response`` so it cannot be ``invalid_grant``. Wrap as
+            # transient so the per-day catch doesn't swallow it into a
+            # misleading ``sync complete``.
+            raise TransientRefreshError(str(e)) from e
         save_token_atomic(conn, new_tok)
         return new_tok.access_token
 
