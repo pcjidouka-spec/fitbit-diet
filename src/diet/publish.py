@@ -14,6 +14,50 @@ Never import this module from any layer that reads `intake_events`.
 from dataclasses import dataclass
 from datetime import date
 
+import jsonschema
+
+
+LOG_JSON_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["updated_at", "days"],
+    "properties": {
+        "updated_at": {"type": "string", "format": "date-time"},
+        "days": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "date",
+                    "steps",
+                    "distance_km",
+                    "exercise_kcal",
+                    "weight_kg",
+                ],
+                "properties": {
+                    "date": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+                    "steps": {"type": "integer", "minimum": 0},
+                    "distance_km": {"type": "number", "minimum": 0},
+                    "exercise_kcal": {"type": "integer", "minimum": 0},
+                    "weight_kg": {"type": "number", "minimum": 0},
+                },
+            },
+        },
+    },
+}
+
+
+def validate_log_json(doc: dict) -> None:
+    """Validate a log.json document against the public schema.
+
+    Raises ``jsonschema.ValidationError`` (a subclass of ``Exception``) on any
+    additional / missing / mistyped field. This MUST be called at both the
+    raw-load and final-write boundaries (see ``build_log_json``).
+    """
+    jsonschema.validate(doc, LOG_JSON_SCHEMA)
+
 
 @dataclass(frozen=True)
 class PublicDayRecord:
