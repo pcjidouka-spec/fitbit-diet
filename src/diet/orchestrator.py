@@ -49,12 +49,18 @@ def run_daily_flow(
             "config が未初期化です。先に `diet init` を実行してください。"
         )
     tz = ZoneInfo(cfg.timezone)
-    today = target_date or datetime.now(tz).date()
+    today_real = datetime.now(tz).date()
+    today = target_date or today_real
 
-    # [1/5] Fitbit sync — failure tolerated
+    # [1/5] Fitbit sync — failure tolerated.
+    # run_sync_async fetches the last N days *relative to today_real*, so if the
+    # caller asked for an older --date we widen the window to include it (plus a
+    # 1-day buffer for tz edge cases). Otherwise the requested day's activity /
+    # weight could remain stale or missing.
+    sync_days = max(7, (today_real - today).days + 2)
     click.echo("[1/5 Fitbit同期] 取得中...")
     try:
-        asyncio.run(run_sync_async(conn, days=7))
+        asyncio.run(run_sync_async(conn, days=sync_days))
     except Exception as e:
         click.echo(f"  ⚠ sync failed: {e} (オフラインで続行)")
 
@@ -130,11 +136,14 @@ def run_daily_flow(
         )
         click.echo("  publish 完了")
     except Exception as e:
-        click.echo(f"  publish 失敗: {e}")
-        click.echo(
+        # Surface the failure as a non-zero exit so scripted / scheduled
+        # callers can tell publish did not happen. ClickException prints the
+        # message and sets exit code 1.
+        raise click.ClickException(
+            f"publish 失敗: {e}\n"
             f"  手動で `cd {cfg.hpasaneel_path} && "
             f"git pull --rebase && git push` してください"
-        )
+        ) from e
 
 
 def run_show_only(data_dir: Path, target_date: _date) -> None:
@@ -188,9 +197,12 @@ def _handle_intake_input(conn, target: _date, raw: str) -> None:
 
     Accepted forms:
       - ``""`` → skip
-      - ``"+N"`` → append N kcal
-      - ``"=N"`` → override total to N kcal (also marks the day as complete)
+      - ``"+N"`` → append N kcal (N >= 1)
+      - ``"=N"`` → override total to N kcal (N >= 0; also marks day complete)
     Any other input raises ``click.ClickException``.
+
+    Negative values are rejected: ``int(\"+-500\")`` would otherwise silently
+    insert -500 kcal because the leading ``+``/``=`` is stripped before parsing.
     """
     from diet.db import insert_intake_event
 
@@ -198,22 +210,27 @@ def _handle_intake_input(conn, target: _date, raw: str) -> None:
         return
     now = datetime.now()
     if raw.startswith("+"):
-        try:
-            kcal = int(raw[1:])
-        except ValueError as e:
-            raise click.ClickException(
-                f"unrecognized input: {raw!r} (+N or =N の N は整数)"
-            ) from e
+        kcal = _parse_kcal(raw, raw[1:], min_value=1)
         insert_intake_event(conn, target, now, kcal, "append")
     elif raw.startswith("="):
-        try:
-            kcal = int(raw[1:])
-        except ValueError as e:
-            raise click.ClickException(
-                f"unrecognized input: {raw!r} (+N or =N の N は整数)"
-            ) from e
+        # =0 is valid for fasting days; negative is not.
+        kcal = _parse_kcal(raw, raw[1:], min_value=0)
         insert_intake_event(conn, target, now, kcal, "override")
     else:
         raise click.ClickException(
             f"unrecognized input: {raw!r} (+追加 or =上書き or Enter)"
         )
+
+
+def _parse_kcal(raw: str, payload: str, *, min_value: int) -> int:
+    try:
+        kcal = int(payload)
+    except ValueError as e:
+        raise click.ClickException(
+            f"unrecognized input: {raw!r} (+N or =N の N は非負整数)"
+        ) from e
+    if kcal < min_value:
+        raise click.ClickException(
+            f"unrecognized input: {raw!r} (N は {min_value} 以上である必要があります)"
+        )
+    return kcal

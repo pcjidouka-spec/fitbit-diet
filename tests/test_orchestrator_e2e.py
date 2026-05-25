@@ -110,6 +110,82 @@ def test_orchestrator_offline_sync_failure_tolerated(setup_db, monkeypatch, mock
     assert events[0].kcal == 2300
 
 
+def test_orchestrator_widens_sync_window_for_past_date(setup_db, monkeypatch, mocker):
+    """diet --date 20日前 → sync は target_date を含むよう日数を広げる"""
+    from datetime import date as _date
+    from zoneinfo import ZoneInfo
+    tmp_path, conn = setup_db
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    today_real = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    target = today_real - timedelta(days=20)
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    upsert_daily_weight(conn, target, 71.2)
+    spy = mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="=2300")
+    mocker.patch("click.confirm", return_value=False)
+    from diet.orchestrator import run_daily_flow
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    # sync_days = max(7, 20+2) = 22
+    spy.assert_called_once()
+    _, kwargs = spy.call_args
+    assert kwargs.get("days", 7) >= 22, f"expected sync window ≥ 22 days, got {kwargs}"
+
+
+def test_orchestrator_publish_failure_raises(setup_db, monkeypatch, mocker):
+    """publish 例外時は ClickException で exit 0 にしない"""
+    import click as _click
+    tmp_path, conn = setup_db
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    target = date(2026, 5, 25)
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="=2300")
+    mocker.patch("click.confirm", return_value=True)  # confirm publish
+    mocker.patch(
+        "diet.publish.publish_to_hpasaneel",
+        side_effect=Exception("git push failed"),
+    )
+    from diet.orchestrator import run_daily_flow
+    with pytest.raises(_click.ClickException) as exc:
+        run_daily_flow(data_dir=tmp_path, target_date=target)
+    assert "publish 失敗" in exc.value.message
+
+
+def test_orchestrator_rejects_negative_intake(setup_db, monkeypatch, mocker):
+    """+-500 / =-100 は弾く (=0 は OK)"""
+    import click as _click
+    tmp_path, conn = setup_db
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    target = date(2026, 5, 25)
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.confirm", return_value=False)
+    from diet.orchestrator import run_daily_flow
+    # +-500 must be rejected
+    mocker.patch("click.prompt", return_value="+-500")
+    with pytest.raises(_click.ClickException):
+        run_daily_flow(data_dir=tmp_path, target_date=target)
+    assert get_events_for_date(conn, target) == []
+    # =-100 must be rejected
+    mocker.patch("click.prompt", return_value="=-100")
+    with pytest.raises(_click.ClickException):
+        run_daily_flow(data_dir=tmp_path, target_date=target)
+    assert get_events_for_date(conn, target) == []
+    # =0 must be accepted (fasting day)
+    mocker.patch("click.prompt", return_value="=0")
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    events = get_events_for_date(conn, target)
+    assert len(events) == 1 and events[0].kcal == 0 and events[0].op == "override"
+
+
 def test_run_show_only_no_publish(setup_db, monkeypatch, mocker):
     """show is display-only: no intake prompt, no publish"""
     tmp_path, conn = setup_db
