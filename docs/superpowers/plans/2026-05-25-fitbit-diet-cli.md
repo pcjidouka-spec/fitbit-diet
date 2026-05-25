@@ -1287,35 +1287,25 @@ def test_raw_load_rejects_poisoned_existing_doc():
         build_log_json([], existing_doc=poisoned)
 
 def test_final_write_rejects_poisoned_final_dict(mocker):
-    """final write 段: build_log_json が組み立てた dict に余計フィールド注入 → reject
+    """final write 段が独立に reject できることを証明。
 
-    raw load を bypass するため、validate_log_json を 1 回目だけ通すスタブを使う"""
+    実装には内部 seam として `_assemble_final_dict(records, existing_doc) -> dict`
+    を分離し、build_log_json は `_assemble_final_dict → validate_log_json(final) → return`
+    の流れにする。これにより _assemble_final_dict を spy で汚染した状態でも final
+    validate 段が確実に呼ばれて reject することを直接証明できる。"""
     import diet.publish as pub
-    call_count = {"n": 0}
-    real_validate = pub.validate_log_json
-    def staged(doc):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return  # raw load 段はパスさせる
-        return real_validate(doc)  # 2 段目 = final で本物
-    mocker.patch.object(pub, "validate_log_json", side_effect=staged)
-    # build_log_json 内で final dict を組んだ後、外部から後付け汚染できないので、
-    # publish.py 側の merge ロジックに余計キーを差し込んで再現:
-    # ここでは「raw load を validate しなかった経路で final dict に余計キーが入る」場合に
-    # final 段がそれを reject することを確認したい。
-    # build_log_json は raw load を必ず validate するので、上で raw 段を pass さ
-    # せた上で「既存に余計キーがあると DTO 経由でドロップされず final にも残り、final 段で
-    # 落ちる」ことを確認:
-    poisoned_existing = {
-        "updated_at": "2026-05-25T22:00:00+09:00",
-        "days": [{"date": "2026-05-24", "steps": 1, "distance_km": 1.0,
-                  "exercise_kcal": 1, "weight_kg": 1.0, "note": "LEAK"}],
-    }
+    from diet.publish import build_log_json, PublicDayRecord
     rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0,
                            exercise_kcal=1, weight_kg=1.0)
+    # 内部 seam を spy で置き換え、final dict に毒を注入してから build_log_json に渡す
+    real_assemble = pub._assemble_final_dict
+    def poisoning(records, existing_doc):
+        d = real_assemble(records, existing_doc)
+        d["days"][0]["note"] = "LEAK"  # final 段 validate で必ず弾かれるべき
+        return d
+    mocker.patch.object(pub, "_assemble_final_dict", side_effect=poisoning)
     with pytest.raises(Exception):
-        build_log_json([rec], existing_doc=poisoned_existing)
-    assert call_count["n"] == 2  # 1 回目 raw (pass spoof), 2 回目 final (reject)
+        build_log_json([rec], existing_doc=None)
 
 def test_validate_called_twice_when_existing(mocker):
     valid_existing = {"updated_at": "2026-05-25T22:00:00+09:00", "days": []}
@@ -1331,7 +1321,31 @@ def test_validate_called_once_when_no_existing(mocker):
     assert spy.call_count == 1  # final のみ
 ```
 
-- [ ] **Step 2-3: Implement** (rev1 と同等、raw load 段で `validate_log_json(existing_doc)` を必ず呼ぶ)
+- [ ] **Step 2-3: Implement** raw load + 最終 validate を内部 seam として分離する設計に:
+
+```python
+def _assemble_final_dict(records: list[PublicDayRecord], existing_doc: dict | None) -> dict:
+    """Pure function: merge records into existing days, sort, attach updated_at."""
+    if existing_doc is not None:
+        existing_by_date = {d["date"]: d for d in existing_doc["days"]}
+    else:
+        existing_by_date = {}
+    for r in records:
+        existing_by_date[r.date.isoformat()] = r.to_public_dict()
+    return {
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "days": sorted(existing_by_date.values(), key=lambda d: d["date"], reverse=True),
+    }
+
+def build_log_json(records: list[PublicDayRecord], existing_doc: dict | None) -> dict:
+    if existing_doc is not None:
+        validate_log_json(existing_doc)        # 段 1: raw load
+    final = _assemble_final_dict(records, existing_doc)
+    validate_log_json(final)                    # 段 2: final
+    return final
+```
+
+`_assemble_final_dict` を内部関数として export しておくことで、final 段 reject テストが内部 seam 経由で書ける。
 
 - [ ] **Step 4-5**: Pass, `git commit -m "feat(publish): 2-stage validate (raw load + final write) enforced"`
 
@@ -2765,40 +2779,51 @@ def test_cold_start_unconfirmed():
 
 ```python
 def test_publish_with_other_uncommitted_changes(tmp_path):
-    """log.json 以外に未コミット変更がある時、log.json だけ commit する（巻き込まない）"""
+    """log.json 以外に未コミット変更がある時、log.json だけ commit する（巻き込まない）
+
+    pretrack: README.md を最初の commit に含める → 後で modify → publish 後も
+    unstaged のままで、最後の commit に含まれないこと"""
     import subprocess
     repo = tmp_path / "HPasaneel"
     (repo / "content/diet").mkdir(parents=True)
-    _init_repo(repo)
-    # 別ファイルを変更
-    (repo / "README.md").write_text("# changed by user")
+    _init_repo(repo)  # _init_repo は README.md を既に commit 済みにする想定 (Task 5.6 の helper)
+    # README.md を tracked な状態で modify
+    (repo / "README.md").write_text("# changed by user after init")
+    # 未 stage であることを確認
+    pre_status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True)
+    assert " M README.md" in pre_status.stdout, f"setup: README must be modified but unstaged, got: {pre_status.stdout!r}"
+
     rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0)
     publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
-    # README.md は未コミット のまま
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True)
-    assert " M README.md" in status.stdout or "M  README.md" not in status.stdout  # 未 stage
-    # log.json の commit が走った
-    log = subprocess.run(["git", "log", "--oneline"], cwd=repo, check=True, capture_output=True, text=True)
-    assert "diet: 2026-05-25" in log.stdout
+
+    # README.md は依然として未 stage の modified 状態
+    post_status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True)
+    assert " M README.md" in post_status.stdout, f"README must remain unstaged, got: {post_status.stdout!r}"
+
+    # 最後の commit に含まれるファイルは content/diet/log.json のみ
+    files_in_last = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=", "HEAD"], cwd=repo,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    assert files_in_last == ["content/diet/log.json"], f"last commit must contain only log.json, got: {files_in_last}"
 ```
 
 `git commit -m "test(edgecase): publish does not pull in unrelated dirty files"`
 
 ---
 
-## Task 9.9: git push failure (rebase 不可) → ユーザーに手動解決を促す
+## Task 9.9: git push failure → CLI でユーザーに手動解決を促す
 
-- [ ] **Step 1-5: TDD**
+- [ ] **Step 1-5: TDD (publish 層と CLI 層 両方をカバー)**
 
 ```python
+# (a) publish 層: CalledProcessError を伝播
 def test_publish_propagates_push_failure(tmp_path, mocker):
-    """git push が exit 非 0 で失敗したら、CalledProcessError を伝播し orchestrator 側で処理"""
     import subprocess
     repo = tmp_path / "HPasaneel"
     (repo / "content/diet").mkdir(parents=True)
     _init_repo(repo)
     rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0)
-    # subprocess.run の "git push" だけ失敗させる
     orig = subprocess.run
     def fake(args, **kw):
         if isinstance(args, list) and args[:2] == ["git", "push"]:
@@ -2808,35 +2833,94 @@ def test_publish_propagates_push_failure(tmp_path, mocker):
     import pytest
     with pytest.raises(subprocess.CalledProcessError):
         publish_to_hpasaneel(repo, "content/diet", [rec], do_push=True)
+
+# (b) orchestrator 層: push 失敗時に手動解決メッセージを出すこと
+def test_orchestrator_push_failure_shows_manual_resolution_message(tmp_path, monkeypatch, mocker, capsys):
+    """publish が CalledProcessError を投げた時、orchestrator が click.echo で
+    「手動で git push を解決してください」相当のメッセージを表示すること"""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    import subprocess
+    from diet.db import open_db, Config, save_config, Token, save_token_atomic, upsert_daily_activity, upsert_daily_weight
+    from datetime import date, datetime
+    conn = open_db(tmp_path / "diet.db")
+    target = date(2026, 5, 25)
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo", str(tmp_path / "hp"), "content/diet", "marginal", 2000))
+    save_token_atomic(conn, Token("A","R", datetime(2030,1,1), "UID"))
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="=2300")
+    mocker.patch("click.confirm", return_value=True)  # publish に進む
+    mocker.patch("diet.publish.publish_to_hpasaneel",
+                 side_effect=subprocess.CalledProcessError(1, ["git", "push"], stderr=b"non-fast-forward"))
+    from diet.orchestrator import run_daily_flow
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    out = capsys.readouterr().out
+    assert "手動" in out or "manually" in out.lower() or "pull --rebase" in out
 ```
 
-`git commit -m "test(edgecase): push failure propagates for manual resolution"`
+実装側: orchestrator の publish 呼び出しを try/except でくるみ、CalledProcessError を catch して `click.echo("publish 失敗: 手動で `git pull --rebase` してから再実行してください")` を表示、exit はしない（次回 `diet` 実行時に再試行できる）。
+
+`git commit -m "feat(orchestrator)+test(edgecase): push failure shows manual resolution"`
 
 ---
 
-## Task 9.10: cert expiry / --regen-cert
+## Task 9.10: cert 有効期間 + diet auth --regen-cert
 
-- [ ] **Step 1-5: TDD**
+- [ ] **Step 1-5: TDD (3 段: 有効期間検証 + idempotent 確認 + CLI 層)**
 
 ```python
-def test_regen_cert_recreates_files(tmp_path):
+def test_cert_validity_period(tmp_path):
+    """生成した cert の not_valid_after が指定日数後であること"""
     from diet.oauth import generate_self_signed_cert
-    cert = tmp_path / "cert.pem"
-    key = tmp_path / "key.pem"
-    generate_self_signed_cert(cert, key, "localhost", 1)  # 1 日のみ
-    original = cert.read_bytes()
-    # 再生成 (no-op since exists)
+    from cryptography import x509
+    from datetime import datetime, timezone, timedelta
+    cert_path = tmp_path / "c.pem"
+    key_path = tmp_path / "k.pem"
+    generate_self_signed_cert(cert_path, key_path, "localhost", days_valid=3650)
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    expected = datetime.now(timezone.utc) + timedelta(days=3650)
+    delta = abs((cert.not_valid_after_utc - expected).total_seconds())
+    assert delta < 60  # 生成タイミングのズレ許容
+
+def test_generate_idempotent_when_both_exist(tmp_path):
+    """既存ファイルがあれば上書きしない (no-op)"""
+    from diet.oauth import generate_self_signed_cert
+    cert_path = tmp_path / "c.pem"
+    key_path = tmp_path / "k.pem"
+    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
+    original_cert = cert_path.read_bytes()
+    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
+    assert cert_path.read_bytes() == original_cert  # idempotent
+
+def test_cli_auth_regen_cert_replaces_files(tmp_path, monkeypatch, mocker):
+    """`diet auth --regen-cert` で既存 cert/key を削除して再生成 → serial が変わる"""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import open_db, Config, save_config
+    from datetime import date
+    conn = open_db(tmp_path / "diet.db")
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None))
+    from diet.oauth import generate_self_signed_cert
+    cert = tmp_path / "oauth_cert.pem"
+    key = tmp_path / "oauth_key.pem"
     generate_self_signed_cert(cert, key, "localhost", 3650)
-    assert cert.read_bytes() == original
-    # cli で --regen-cert オプション付きで auth → 削除して再生成
-    cert.unlink()
-    key.unlink()
-    generate_self_signed_cert(cert, key, "localhost", 3650)
-    assert cert.exists() and key.exists()
-    assert cert.read_bytes() != original
+    original_bytes = cert.read_bytes()
+    # OAuth フロー本体は mock (auth サブコマンドが run_init_flow を呼ぶことだけ確認したい)
+    spy = mocker.patch("diet.oauth.run_init_flow", return_value=None)
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth", "--regen-cert"])
+    assert result.exit_code == 0
+    # cert は再生成され、内容が変わっている
+    assert cert.exists()
+    assert cert.read_bytes() != original_bytes
+    spy.assert_called_once()
 ```
 
-`git commit -m "test(edgecase): cert regen produces new files"`
+`git commit -m "test(edgecase): cert validity period + regen via CLI"`
 
 ---
 
