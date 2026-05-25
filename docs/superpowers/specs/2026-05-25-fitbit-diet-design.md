@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（codex review 反映, rev 4 = final）
+- 最終更新: 2026-05-25（プライバシー方針明確化, rev 5）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -13,13 +13,23 @@
 
 「食べた分だけ歩く・走る」をパーソナル運用するための CLI ツールを作る。
 
-- **食事カロリー**: CLI で手入力（内部のみ、絶対公開しない）
-- **運動データ・体重**: Fitbit Web API 経由で取得
+- **食事カロリー（kcal 数値）**: CLI で手入力。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
+- **食事メニュー（note 文字列）**: ★最重要秘匿対象★ 絶対に公開しない
+- **運動データ・体重**: Fitbit Web API 経由で取得、HPasaneel に公開
 - **基礎代謝（BMR）**: 生年月日・身長・性別と当日体重から自動算出
-- **収支**: 摂取 vs (BMR + 運動消費) を毎回算出
+- **収支**: 摂取 vs (BMR + 運動消費) を毎回算出（CLI 内のみ表示）
 - **公開**: 運動データと体重のみを HPasaneel に日次でダッシュボード公開
 
-「見られている」プレッシャーをダイエットの動機付けに使うが、食事カロリーから収支まで逆算されないよう、**食事系は構造的に絶対公開しない境界**を設計に組み込む。
+「見られている」プレッシャーをダイエットの動機付けに使う。
+
+**プライバシー境界の本質（rev 5 で再定義）:** 公開しないものは 2 種類あり、保護レベルが違う:
+
+| 項目 | 保護レベル | 理由 |
+|---|---|---|
+| `intake_events.note`（メニュー名等） | ★絶対秘匿。構造的に公開不能 | 「何を食べたか」は本人の食生活・嗜好情報、人格に紐づく |
+| `intake_events.kcal`（摂取カロリー数値） | dashboard には出さない | 出さないが、運動 + 体重変動から推測される可能性は許容 |
+
+`kcal` を保護せず `note` のみを絶対秘匿対象とするので、公開境界の allowlist 2 層防衛（§ 7）は **特に `note` の漏洩を防ぐ**ことが第一目的になる。
 
 ---
 
@@ -145,14 +155,16 @@ config (
                                       -- 初期は NULL、calibrate 後に確定
 )
 
--- 食事イベント（1 回ごと append）  ← 内部のみ・絶対公開しない
+-- 食事イベント（1 回ごと append）
+-- kcal: dashboard には出さないが逆算は許容
+-- note: ★最重要秘匿、絶対に公開境界を越えない
 intake_events (
   id            INTEGER PRIMARY KEY,
   date          DATE,        -- YYYY-MM-DD（Asia/Tokyo で正規化）
   timestamp     DATETIME,    -- 入力時刻
   kcal          INTEGER,
   op            TEXT,        -- 'append' or 'override'
-  note          TEXT         -- 任意メモ
+  note          TEXT         -- ★メニュー名等。絶対秘匿、構造的に publish 不能にする
 )
 
 -- Fitbit 運動データ（日次）  ← 公開対象
@@ -188,9 +200,9 @@ fitbit_token (
 **設計判断:**
 - **収支・BMR は保存しない** → 毎回算出（体重訂正で過去日が自動的に正しい値になる）
 - **食事は append 履歴** → 全イベントを残し、`op='override'` も含めて履歴追跡可能
-- **公開境界の物理分離（codex Medium-2 対応）** → § 7 で詳述。publish 関数は `daily_activity` と `daily_weight` のみ SELECT し、`intake_events` に触らないことをユニットテストで担保
+- **公開境界の物理分離** → § 7 で詳述。publish 関数は `daily_activity` と `daily_weight` のみ SELECT し、`intake_events` に触らないことをユニットテストで担保（特に `note` が漏れない保証が最重要）
 - **time zone は Asia/Tokyo 固定** → 日付境界は JST の 0 時
-- **Fitbit カロリー候補を 2 列で保存（codex HIGH 対応）** → calibration 期間中も後追いでも比較可能
+- **Fitbit カロリー候補を 2 列で保存** → calibration 期間中も後追いでも比較可能
 
 ---
 
@@ -476,7 +488,8 @@ C:/code/HPasaneel/
     - UTC で日付跨ぎでも Asia/Tokyo で同じ日なら同じ年齢を返すこと
   - BMR 定数の検算: 体重 70.0 / 年齢 46 → `bmr == 1531.25`（小数 2 桁まで）
 - **`publish.py`** — 公開境界の二重担保:
-  - **境界テスト**: `intake_events` に多様なデータを insert → publish 実行 → log.json に食事系フィールドが**絶対出ない**ことを diff で検証
+  - **境界テスト**: `intake_events` に多様なデータ（特に **note に "ラーメン特盛"**, "焼肉ホルモン" 等の生々しい文字列を含む）を insert → publish 実行 → log.json に **note 文字列が一切現れない**ことを diff で検証
+  - kcal は方針上 dashboard 非公開なので、`intake_events.kcal` の値が log.json に出ないことも併せて assert
   - **schema guard テスト**: 余計なフィールドを持つ DTO を渡したら例外で停止することを確認
   - 公開フィールドが `date / steps / distance_km / exercise_kcal / weight_kg` の 5 個のみであることを assert
 - **`publish.py`** — DTO 変換契約:
@@ -528,7 +541,14 @@ C:/code/HPasaneel/
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
 
-### rev 4 (2026-05-25) — final
+### rev 5 (2026-05-25) — privacy policy clarification
+| 変更内容 | 反映場所 |
+|---|---|
+| プライバシー保護対象を「食事系全体」から「食事メニュー (note) のみ★絶対秘匿」に再定義 | § 1 目的と方針 全面書き直し、保護レベル 2 段階表を追加 |
+| `intake_events.note` が境界保証の最重要対象であることを明示 | § 6 スキーマコメント、§ 12 境界テスト |
+| 境界テストで note に生々しい文字列 ("ラーメン特盛" 等) を含めて漏洩検査を強化 | § 12 publish.py 境界テスト |
+
+### rev 4 (2026-05-25) — codex loop closed
 | codex 指摘 | 反映場所 |
 |---|---|
 | Medium: load 後の DTO 正規化で unknown field が silent drop され schema が catch しない | § 7 merge 手順を「raw load → schema validate → DTO → merge → schema validate → write」の 6 ステップに明文化、§ 12 で 2 段 validate のテストを明記 |
