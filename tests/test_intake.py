@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from diet.intake import (
     IntakeEvent, recorded_sum, is_complete_day,
     DailyEvents, past_avg, SAMPLE_FLOOR,
+    decide_intake_kcal, IntakeDecision,
 )
 
 
@@ -149,3 +150,60 @@ def test_past_avg_excludes_target_minus_15():
     avg, n = past_avg(history, target_date=target)
     assert n == 3
     assert avg == 2000.0
+
+
+def test_case1_complete_recorded_authoritative():
+    d = decide_intake_kcal([E(1800, "override")], past_avg_val=2000.0, n_samples=10, bootstrap_baseline=2200)
+    assert d.intake_kcal == 1800
+    assert d.label == "recorded_authoritative"
+
+
+def test_case1_fasting_zero_not_inflated():
+    """★最重要: =0 が past_avg・baseline で水増しされない"""
+    d = decide_intake_kcal([E(0, "override")], past_avg_val=2200.0, n_samples=10, bootstrap_baseline=2000)
+    assert d.intake_kcal == 0
+    assert d.label == "recorded_authoritative"
+
+
+def test_case2_partial_recorded_high_with_avg():
+    d = decide_intake_kcal([E(2400, "append")], past_avg_val=2000.0, n_samples=10, bootstrap_baseline=None)
+    assert d.intake_kcal == 2400
+    assert d.label == "recorded_partial_high"
+
+
+def test_case2_partial_recorded_low_with_avg():
+    d = decide_intake_kcal([E(500, "append")], past_avg_val=2100.0, n_samples=11, bootstrap_baseline=None)
+    assert d.intake_kcal == 2100
+    assert d.label == "estimated_avg_supplement"
+    assert d.recorded_part == 500
+    assert d.supplement_part == 1600
+
+
+def test_case3_partial_no_avg_baseline_supplemented():
+    d = decide_intake_kcal([E(500, "append")], past_avg_val=None, n_samples=2, bootstrap_baseline=2000)
+    assert d.intake_kcal == 2000
+    assert d.label == "estimated_baseline_supplement"
+
+
+def test_case4_partial_no_avg_no_baseline():
+    d = decide_intake_kcal([E(500, "append")], past_avg_val=None, n_samples=0, bootstrap_baseline=None)
+    assert d.intake_kcal == 500
+    assert d.label == "recorded_no_baseline"
+
+
+def test_case5_empty_avg_available():
+    d = decide_intake_kcal([], past_avg_val=1980.0, n_samples=8, bootstrap_baseline=2000)
+    assert d.intake_kcal == 1980
+    assert d.label == "estimated_avg"
+
+
+def test_case6_empty_no_avg_baseline_used():
+    d = decide_intake_kcal([], past_avg_val=None, n_samples=2, bootstrap_baseline=2000)
+    assert d.intake_kcal == 2000
+    assert d.label == "estimated_baseline"
+
+
+def test_case7_empty_no_avg_no_baseline():
+    d = decide_intake_kcal([], past_avg_val=None, n_samples=0, bootstrap_baseline=None)
+    assert d.intake_kcal is None
+    assert d.label == "unconfirmed"
