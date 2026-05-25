@@ -122,3 +122,4 @@ def test_weight_fallback_displays_days_ago(tmp_path, monkeypatch, mocker, capsys
     captured = capsys.readouterr()
     assert "71.5" in captured.out
     assert "2026-05-22" in captured.out  # 計測日表示
+    assert "3日前" in captured.out  # fallback 警告 (N 日前)

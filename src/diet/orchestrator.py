@@ -71,7 +71,17 @@ def run_daily_flow(
             f"  歩数 {activity.steps:,} / 距離 {activity.distance_km:.1f}km"
         )
     if weight is not None:
-        click.echo(f"  体重 {weight.weight_kg}kg ({weight.date} 計測)")
+        days_ago = (today - weight.date).days
+        if days_ago == 0:
+            click.echo(f"  体重 {weight.weight_kg}kg ({weight.date} 計測)")
+        else:
+            # Fallback path: latest weight reading predates ``today``. Surface
+            # the staleness explicitly so the user knows the BMR is using
+            # ``days_ago``-old data (spec §4: "体重 fallback で N 日前 を使用").
+            click.echo(
+                f"  体重 {weight.weight_kg}kg ({weight.date} 計測, "
+                f"{days_ago}日前を使用)"
+            )
 
     # [2/5] 食事入力
     cur_events = get_events_for_date(conn, today)
