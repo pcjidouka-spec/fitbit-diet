@@ -161,3 +161,78 @@ def get_latest_weight_on_or_before(conn, d: date) -> DailyWeightRow | None:
     if row is None:
         return None
     return DailyWeightRow(date=date.fromisoformat(row[0]), weight_kg=row[1])
+
+
+@dataclass(frozen=True)
+class Config:
+    birthday: date
+    height_cm: int
+    sex: str
+    timezone: str
+    hpasaneel_path: str | None
+    hpasaneel_diet_root: str
+    exercise_calorie_source: str | None
+    bootstrap_daily_kcal: int | None
+
+
+def save_config(conn, cfg: Config) -> None:
+    conn.execute(
+        """INSERT INTO config (id, birthday, height_cm, sex, timezone, hpasaneel_path,
+                              hpasaneel_diet_root, exercise_calorie_source, bootstrap_daily_kcal)
+           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             birthday=excluded.birthday, height_cm=excluded.height_cm, sex=excluded.sex,
+             timezone=excluded.timezone, hpasaneel_path=excluded.hpasaneel_path,
+             hpasaneel_diet_root=excluded.hpasaneel_diet_root,
+             exercise_calorie_source=excluded.exercise_calorie_source,
+             bootstrap_daily_kcal=excluded.bootstrap_daily_kcal""",
+        (cfg.birthday.isoformat(), cfg.height_cm, cfg.sex, cfg.timezone, cfg.hpasaneel_path,
+         cfg.hpasaneel_diet_root, cfg.exercise_calorie_source, cfg.bootstrap_daily_kcal),
+    )
+    conn.commit()
+
+
+def load_config(conn) -> Config | None:
+    row = conn.execute(
+        "SELECT birthday, height_cm, sex, timezone, hpasaneel_path, hpasaneel_diet_root, "
+        "exercise_calorie_source, bootstrap_daily_kcal FROM config WHERE id=1"
+    ).fetchone()
+    if row is None:
+        return None
+    return Config(birthday=date.fromisoformat(row[0]), height_cm=row[1], sex=row[2], timezone=row[3],
+                  hpasaneel_path=row[4], hpasaneel_diet_root=row[5],
+                  exercise_calorie_source=row[6], bootstrap_daily_kcal=row[7])
+
+
+@dataclass(frozen=True)
+class Token:
+    access_token: str
+    refresh_token: str
+    expires_at: datetime
+    user_id: str
+
+
+def save_token_atomic(conn, tok: Token) -> None:
+    """BEGIN IMMEDIATE で他プロセスと排他、全置換、commit。"""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM fitbit_token")
+        conn.execute(
+            "INSERT INTO fitbit_token (id, access_token, refresh_token, expires_at, user_id, rotated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?)",
+            (tok.access_token, tok.refresh_token, tok.expires_at.isoformat(), tok.user_id, datetime.now().isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def load_token(conn) -> Token | None:
+    row = conn.execute(
+        "SELECT access_token, refresh_token, expires_at, user_id FROM fitbit_token WHERE id=1"
+    ).fetchone()
+    if row is None:
+        return None
+    return Token(access_token=row[0], refresh_token=row[1],
+                 expires_at=datetime.fromisoformat(row[2]), user_id=row[3])

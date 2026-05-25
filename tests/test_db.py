@@ -11,6 +11,12 @@ from diet.db import (
     get_daily_activity,
     upsert_daily_weight,
     get_latest_weight_on_or_before,
+    Config,
+    save_config,
+    load_config,
+    Token,
+    save_token_atomic,
+    load_token,
 )
 from diet.intake import IntakeEvent
 
@@ -112,3 +118,37 @@ def test_weight_no_time_machine(tmp_path):
 def test_get_weight_returns_none_when_empty(tmp_path):
     conn = open_db(tmp_path / "t.db")
     assert get_latest_weight_on_or_before(conn, date(2026, 5, 25)) is None
+
+
+# ---------- Task 2.4: config + atomic token rotation ----------
+
+
+def test_config_round_trip(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    cfg = Config(birthday=date(1979, 12, 1), height_cm=169, sex="male", timezone="Asia/Tokyo",
+                 hpasaneel_path="C:/code/HPasaneel", hpasaneel_diet_root="content/diet",
+                 exercise_calorie_source="marginal", bootstrap_daily_kcal=2000)
+    save_config(conn, cfg)
+    assert load_config(conn) == cfg
+
+
+def test_config_update_overwrites(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    cfg1 = Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None)
+    save_config(conn, cfg1)
+    cfg2 = Config(date(1979, 12, 1), 170, "male", "Asia/Tokyo", None, "content/diet", "marginal", 2200)
+    save_config(conn, cfg2)
+    loaded = load_config(conn)
+    assert loaded.height_cm == 170
+    assert loaded.exercise_calorie_source == "marginal"
+
+
+def test_token_atomic_replacement(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    t1 = Token("A1", "R1", datetime(2026, 12, 31), "UID")
+    save_token_atomic(conn, t1)
+    t2 = Token("A2", "R2", datetime(2027, 1, 1), "UID")
+    save_token_atomic(conn, t2)
+    loaded = load_token(conn)
+    assert loaded.access_token == "A2"
+    assert conn.execute("SELECT COUNT(*) FROM fitbit_token").fetchone()[0] == 1
