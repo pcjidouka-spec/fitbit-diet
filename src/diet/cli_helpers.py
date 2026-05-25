@@ -19,11 +19,19 @@ class RefreshTokenError(Exception):
     """Raised when the OAuth refresh-token itself is invalid (revoked).
 
     ONLY raised for ``invalid_grant`` (and look-alikes that indicate a dead
-    refresh token). Transient HTTP failures from the token endpoint —
-    5xx outages, 429 rate limits, ``invalid_client`` credentials errors —
-    are re-raised as the original ``httpx.HTTPStatusError`` so the CLI can
-    distinguish "re-auth will fix this" from "wait and retry".
+    refresh token). Transient HTTP failures from the token endpoint are
+    raised as ``TransientRefreshError`` so the CLI can distinguish
+    "re-auth will fix this" from "wait and retry", and so the per-day
+    ``except Exception`` below does not swallow either auth failure as a
+    routine warning.
     """
+
+
+class TransientRefreshError(Exception):
+    """Raised when the token-endpoint exchange failed transiently (5xx /
+    429 / ``invalid_client``). Distinct from per-day API failures so the
+    per-day ``except Exception`` does not swallow it — the user has no
+    auth fix to apply, but the sync should still surface as failed."""
 
 
 def _is_invalid_grant(exc: httpx.HTTPStatusError) -> bool:
@@ -67,16 +75,15 @@ async def run_sync_async(conn, days: int):
                 tok.refresh_token,
             )
         except httpx.HTTPStatusError as e:
-            # Only ``invalid_grant`` indicates a permanently dead refresh
-            # token that the user can fix by re-running ``diet auth``. Other
-            # token-endpoint failures (5xx outages, 429 rate limits,
-            # ``invalid_client`` credential errors) should propagate as the
-            # original HTTPStatusError so the CLI handler can surface a
-            # different message ("transient — try later") instead of falsely
-            # telling the user to re-auth.
+            # Wrap so the per-day ``except Exception`` below does not swallow
+            # the failure as a routine warning. Distinguish by error body:
+            #   - ``invalid_grant`` → ``RefreshTokenError`` (user fixes via
+            #     ``diet auth``)
+            #   - anything else (5xx, 429, ``invalid_client``) →
+            #     ``TransientRefreshError`` (user waits and retries)
             if _is_invalid_grant(e):
                 raise RefreshTokenError(str(e)) from e
-            raise
+            raise TransientRefreshError(str(e)) from e
         save_token_atomic(conn, new_tok)
         return new_tok.access_token
 
@@ -109,10 +116,12 @@ async def run_sync_async(conn, days: int):
                 upsert_daily_weight(
                     conn, date.fromisoformat(w["date"]), float(w["weight"])
                 )
-        except RefreshTokenError:
-            # Auth layer failure — propagate so the CLI can route the user to
-            # ``diet auth``. Per-day API failures (e.g. transient 500s) keep
-            # falling through to the generic warning below.
+        except (RefreshTokenError, TransientRefreshError):
+            # Auth-layer failures must escape so the CLI can route the user
+            # appropriately (``diet auth`` vs transient retry). Per-day API
+            # failures (a single bad 4xx/5xx from get_activity_summary or
+            # get_weight_log) still fall through to the generic warning so
+            # one bad day doesn't abort the whole 7-day sync.
             raise
         except Exception as e:
             print(f"sync warning ({d}): {e}", flush=True)

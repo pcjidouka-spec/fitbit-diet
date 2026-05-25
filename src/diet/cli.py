@@ -190,7 +190,7 @@ def sync(days: int) -> None:
 
     import httpx
 
-    from diet.cli_helpers import RefreshTokenError, run_sync_async
+    from diet.cli_helpers import RefreshTokenError, TransientRefreshError, run_sync_async
     from diet.db import load_token
 
     conn = open_db(_data_dir() / "diet.db")
@@ -209,13 +209,15 @@ def sync(days: int) -> None:
         raise click.ClickException(
             "refresh token invalid — run `diet auth` to re-authenticate."
         ) from e
-    except httpx.HTTPStatusError as e:
-        # Non-invalid_grant HTTP failure from the token endpoint (5xx outage,
-        # 429 rate limit, invalid_client) — surface as transient so the user
-        # does not re-auth unnecessarily.
+    except (TransientRefreshError, httpx.HTTPStatusError) as e:
+        # Token-endpoint outage / rate limit / invalid_client. The user has
+        # no auth fix; wait and retry. ``httpx.HTTPStatusError`` is kept in
+        # the tuple so tests that mock ``run_sync_async`` directly with the
+        # raw exception still hit this branch.
         click.echo(f"sync failed (transient): {e}", err=True)
         click.echo(
-            "Fitbit 側の一時的な障害の可能性があります。時間をおいて再試行してください。",
+            "Fitbit 側の一時的な障害の可能性があります。"
+            "時間をおいて再試行してください。",
             err=True,
         )
         raise click.ClickException(f"sync failed (transient): {e}") from e
