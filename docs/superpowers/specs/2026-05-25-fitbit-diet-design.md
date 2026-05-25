@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（editorial cleanup, rev 8 = final）
+- 最終更新: 2026-05-25（OAuth HTTPS callback 対応, rev 9）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -424,9 +424,28 @@ git push          # → Cloudflare Pages auto deploy
 
 ### 1. Fitbit Developer App 登録（ユーザー手動・1 回のみ）
 
-- https://dev.fitbit.com で Personal アプリ登録（無料）
-- リダイレクト URL: `http://localhost:8765/callback`
-- 取得した Client ID / Client Secret を `.env` に保存
+`https://dev.fitbit.com/apps` で "Register a new application" から以下を入力:
+
+| フィールド | 値 | 備考 |
+|---|---|---|
+| Application Name | `Personal Diet CLI` 等 | 任意 |
+| Description | `Personal use diet tracking via Fitbit activity and weight data` | 任意 |
+| Application Website | 任意の HTTPS URL（自分の GitHub 等）| HTTPS 必須 |
+| Organization | 自分の名前 | 個人なので任意 |
+| Organization Website | 同上 | HTTPS 必須 |
+| Terms of Service URL | 同上 | HTTPS 必須 |
+| Privacy Policy URL | 同上 | HTTPS 必須 |
+| **OAuth 2.0 Application Type** | **Personal** ★ | これ以外は審査必要 |
+| **Callback URL** | **`https://localhost:8765/callback`** ★ | Fitbit は HTTPS のみ受付 |
+| **Default Access Type** | **Read-only** | 書き込みは使わない |
+
+登録完了後 `https://dev.fitbit.com/apps` で自分のアプリを開くと **Client ID** と **Client Secret** が表示される。それを `.env` に保存:
+
+```
+FITBIT_CLIENT_ID=23XXXX
+FITBIT_CLIENT_SECRET=abc123def456...
+FITBIT_REDIRECT_URI=https://localhost:8765/callback
+```
 
 ### 2. Renpho → Fitbit 同期設定（ユーザー手動・1 回のみ）
 
@@ -447,8 +466,10 @@ HPasaneel ダッシュボードルート [content/diet]:
   > 2000
 
 → data/diet.db 作成、config 保存 (bootstrap_daily_kcal=2000)
+→ **自己署名 TLS 証明書を生成** (data/oauth_cert.pem, data/oauth_key.pem)
 → Fitbit OAuth フロー起動（ブラウザが開く）
-→ http://localhost:8765/callback で token 受け取り → DB 保存
+→ 初回のみブラウザが証明書警告を出すので「Advanced → Proceed to localhost (unsafe)」で進む
+→ https://localhost:8765/callback で token 受け取り → DB 保存
 → 初回 sync 実行（過去 30 日分を遡って取得、カロリー 2 候補を両方保存）
 → 「次に `diet calibrate` を実行して exercise_kcal の値を決めてください」と案内
 ```
@@ -493,7 +514,7 @@ C:/code/fitbit連動ダイエット/
       __main__.py        # diet コマンド本体（対話フロー orchestrator）
       cli.py             # click/typer 定義（下記コマンド一覧参照）
       fitbit_client.py   # Fitbit Web API ラッパー + rate limit tracking
-      oauth.py           # OAuth フロー + localhost callback server + atomic token rotation
+      oauth.py           # OAuth フロー + HTTPS localhost callback server + 自己署名証明書生成 + atomic token rotation
       bmr.py             # BMR 計算（純粋関数、target_date 引数で過去日対応）
       intake.py          # 食事 kcal 算出（recorded_sum / past_avg / final intake_kcal の純粋関数）
       db.py              # SQLite 接続・スキーマ管理
@@ -509,6 +530,8 @@ C:/code/fitbit連動ダイエット/
     ...
   data/                  # .gitignore
     diet.db
+    oauth_cert.pem       # 自己署名 TLS 証明書 (diet init で自動生成、有効期間 10 年)
+    oauth_key.pem        # その秘密鍵
   .env                   # .gitignore（Client ID / Secret）
   .env.example
   pyproject.toml         # uv 管理
@@ -547,7 +570,8 @@ C:/code/HPasaneel/
 - `python-dotenv` — `.env` 読み込み
 - `click` または `typer` — CLI フレームワーク
 - `jsonschema` — 公開 JSON の schema guard
-- 標準ライブラリ: `sqlite3`, `datetime`, `zoneinfo`, `http.server`, `subprocess`, `dataclasses`
+- `cryptography` — 自己署名 TLS 証明書の生成（OAuth callback サーバー用）
+- 標準ライブラリ: `sqlite3`, `datetime`, `zoneinfo`, `http.server`, `ssl`, `subprocess`, `dataclasses`
 
 パッケージマネージャは **uv**。`uv tool install .` でグローバルに `diet` コマンドを入れる。
 
@@ -579,6 +603,8 @@ C:/code/HPasaneel/
 | `git push` 失敗 | エラー出力をそのまま表示、手動解決を促す |
 | Fitbit 未装着（steps=0） | そのまま記録。BMR だけの収支になる（24h 装着しない前提を尊重） |
 | `diet init` 未実行で `diet` を実行 | 「先に `diet init` を実行してください」と案内 |
+| 自己署名証明書の有効期限切れ | `diet auth` または `diet init --regen-cert` で再生成 |
+| ポート 8765 が使用中 | `diet init --port 8888` 等で代替指定可、変更時は Fitbit dev portal の Callback URL も更新が必要 |
 | `diet calibrate` 未実行で `diet` を実行 | `marginal` を暫定使用しつつ「`diet calibrate` を推奨」警告 |
 
 ---
@@ -650,7 +676,8 @@ C:/code/HPasaneel/
 
 ## 14. 未確定事項（実装中に決める or 後追い）
 
-- OAuth callback port `8765` の競合可否確認
+- OAuth callback port `8765` の競合可否確認（競合時は --port オプションで代替）
+- 自己署名証明書の有効期間（10 年デフォルト）と更新フロー
 - log.json のレコード数上限（数年運用後の bundle サイズ対策。1 年 365 行で十分小さいので当面気にしない）
 - ダッシュボード UI の具体デザイン（HPasaneel の既存トーンに合わせる）
 - `exercise_calorie_source` の最終決定は MVP 出荷後 2 週間の calibrate 期間で確定
@@ -669,6 +696,14 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 9 (2026-05-25) — OAuth HTTPS callback 対応
+| 発見 | 反映場所 |
+|---|---|
+| Fitbit dev portal は redirect URL を HTTPS only に強制（localhost も例外なし、公式ドキュメント確認済み）| § 8.1 callback URL を `https://localhost:8765/callback` に修正、登録フォーム各フィールドの値を全部表に明記 |
+| HTTPS callback には TLS 証明書必要、`cryptography` ライブラリで自己署名証明書を `diet init` 時に自動生成 | § 8.3 init フローに証明書生成手順、§ 9 構成に `data/oauth_cert.pem` `oauth_key.pem`、§ 10 dependencies に `cryptography` 追加 |
+| 初回ブラウザ証明書警告は手動で Proceed | § 8.3 ユーザー手順明示 |
+| 証明書失効・ポート競合のエッジケース | § 11 行追加、§ 14 未確定事項 |
 
 ### rev 8 (2026-05-25) — editorial cleanup
 | 変更内容 | 反映場所 |
