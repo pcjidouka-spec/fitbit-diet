@@ -1,10 +1,14 @@
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from diet.oauth import (
     FITBIT_AUTHZ_URL,
     build_authorization_url,
+    exchange_code_for_token,
     generate_self_signed_cert,
+    refresh_access_token,
 )
 
 
@@ -51,3 +55,33 @@ def test_build_authz_url_params():
     assert qs["redirect_uri"] == ["https://localhost:8765/callback"]
     assert qs["scope"] == ["activity weight"]
     assert qs["state"] == ["state123"]
+
+
+async def test_exchange_success(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token", method="POST",
+        json={"access_token": "A1", "refresh_token": "R1", "expires_in": 28800, "user_id": "UID", "scope": "activity weight"},
+    )
+    tok = await exchange_code_for_token("CID", "CSEC", "C1", "https://localhost:8765/callback")
+    assert tok.access_token == "A1"
+    assert tok.user_id == "UID"
+
+
+async def test_refresh_returns_new_pair(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token", method="POST",
+        json={"access_token": "A2", "refresh_token": "R2", "expires_in": 28800, "user_id": "UID", "scope": "activity weight"},
+    )
+    tok = await refresh_access_token("CID", "CSEC", "R1")
+    assert tok.access_token == "A2"
+    assert tok.refresh_token == "R2"
+
+
+async def test_exchange_4xx_raises(httpx_mock):
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token", method="POST",
+        status_code=400, json={"errors": [{"message": "invalid_grant"}]},
+    )
+    import httpx
+    with pytest.raises(httpx.HTTPStatusError):
+        await exchange_code_for_token("CID", "CSEC", "BAD", "https://localhost:8765/callback")

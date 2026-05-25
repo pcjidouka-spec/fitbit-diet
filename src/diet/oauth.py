@@ -1,3 +1,4 @@
+import base64
 import http.server
 import ssl
 import threading
@@ -6,10 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+
+from diet.db import Token
 
 FITBIT_AUTHZ_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
@@ -95,3 +99,39 @@ def run_callback_server(cert_path: Path, key_path: Path, port: int = 8765, timeo
     finished.wait(timeout=timeout_sec)
     httpd.shutdown()
     return result
+
+
+async def exchange_code_for_token(
+    client_id: str, client_secret: str, code: str, redirect_uri: str,
+) -> Token:
+    return await _token_request({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+    }, client_id, client_secret)
+
+
+async def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> Token:
+    return await _token_request({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }, client_id, client_secret)
+
+
+async def _token_request(data: dict, client_id: str, client_secret: str) -> Token:
+    auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(FITBIT_TOKEN_URL, data=data, headers=headers, timeout=30.0)
+        r.raise_for_status()
+        body = r.json()
+    return Token(
+        access_token=body["access_token"],
+        refresh_token=body["refresh_token"],
+        expires_at=datetime.now() + timedelta(seconds=int(body["expires_in"])),
+        user_id=body["user_id"],
+    )
