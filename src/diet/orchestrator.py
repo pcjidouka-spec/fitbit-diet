@@ -146,14 +146,19 @@ def run_daily_flow(
         )
         click.echo("  publish 完了")
     except Exception as e:
-        # Surface the failure as a non-zero exit so scripted / scheduled
-        # callers can tell publish did not happen. ClickException prints the
-        # message and sets exit code 1.
-        raise click.ClickException(
-            f"publish 失敗: {e}\n"
+        # Surface the manual resolution hint directly to the user — Click only
+        # prints the ClickException message when the command exits, so an
+        # ``echo`` here guarantees the hint is visible even when capsys captures
+        # stdout instead of stderr, and when the caller is a scripted invocation
+        # of ``run_daily_flow`` outside the CLI app context.
+        click.echo(f"  publish 失敗: {e}")
+        click.echo(
             f"  手動で `cd {cfg.hpasaneel_path} && "
             f"git pull --rebase && git push` してください"
-        ) from e
+        )
+        # Still raise so the process exits non-zero (scheduled callers can tell
+        # publish did not happen). ClickException sets exit code 1.
+        raise click.ClickException("publish 失敗") from e
 
 
 def run_show_only(data_dir: Path, target_date: _date) -> None:

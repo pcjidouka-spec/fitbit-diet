@@ -413,3 +413,83 @@ def test_publish_with_other_uncommitted_changes(tmp_path):
     assert files_in_last == ["content/diet/log.json"], (
         f"last commit must contain only log.json, got: {files_in_last}"
     )
+
+
+# --- Task 9.9: push failure manual resolution -----------------------------
+
+
+def test_publish_propagates_push_failure(tmp_path, mocker):
+    """publish 層: CalledProcessError ``git push`` を伝播する."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    orig = subprocess.run
+
+    def fake(args, **kw):
+        if isinstance(args, list) and args[:2] == ["git", "push"]:
+            raise subprocess.CalledProcessError(
+                1, args, output=b"", stderr=b"non-fast-forward"
+            )
+        return orig(args, **kw)
+
+    mocker.patch("subprocess.run", side_effect=fake)
+    with pytest.raises(subprocess.CalledProcessError):
+        publish_to_hpasaneel(repo, "content/diet", [rec], do_push=True)
+
+
+def test_orchestrator_push_failure_shows_manual_resolution_message(
+    tmp_path, monkeypatch, mocker, capsys
+):
+    """publish が CalledProcessError を投げた時、orchestrator が click.echo で
+    「手動で git push を解決してください」相当のメッセージを表示すること."""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import (
+        Config,
+        Token,
+        open_db,
+        save_config,
+        save_token_atomic,
+        upsert_daily_activity,
+        upsert_daily_weight,
+    )
+
+    conn = open_db(tmp_path / "diet.db")
+    target = date(2026, 5, 25)
+    save_config(
+        conn,
+        Config(
+            date(1979, 12, 1),
+            169,
+            "male",
+            "Asia/Tokyo",
+            str(tmp_path / "hp"),
+            "content/diet",
+            "marginal",
+            2000,
+        ),
+    )
+    save_token_atomic(conn, Token("A", "R", datetime(2030, 1, 1), "UID"))
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="=2300")
+    mocker.patch("click.confirm", return_value=True)  # confirm publish
+    mocker.patch(
+        "diet.publish.publish_to_hpasaneel",
+        side_effect=subprocess.CalledProcessError(
+            1, ["git", "push"], stderr=b"non-fast-forward"
+        ),
+    )
+    import click as _click
+
+    from diet.orchestrator import run_daily_flow
+
+    with pytest.raises(_click.ClickException):
+        run_daily_flow(data_dir=tmp_path, target_date=target)
+    out = capsys.readouterr().out
+    assert "手動" in out or "manually" in out.lower() or "pull --rebase" in out
