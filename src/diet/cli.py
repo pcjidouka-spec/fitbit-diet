@@ -83,6 +83,15 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
+@click.option("--days", default=14, type=click.IntRange(min=1))
+def calibrate(days: int) -> None:
+    """Show recent Fitbit calorie candidates and select exercise_calorie_source."""
+    from diet.calibrate import run_calibrate
+
+    run_calibrate(_data_dir(), days=days)
+
+
+@app.command()
 @click.option("--days", default=7, type=click.IntRange(min=1))
 def sync(days: int) -> None:
     """Fetch Fitbit activity + weight for the last N days."""
