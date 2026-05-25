@@ -344,3 +344,16 @@ def test_concurrent_token_writes_dont_corrupt(tmp_path):
     tok = load_token(conn)
     assert tok is not None
     assert tok.access_token.startswith(("a", "b"))
+
+
+# --- Task 9.7: cold start unconfirmed -------------------------------------
+
+
+def test_cold_start_unconfirmed():
+    """No today events, no past avg, no baseline → unconfirmed label / None."""
+    from diet.intake import decide_intake_kcal, past_avg
+
+    avg, n = past_avg({}, target_date=date(2026, 5, 25))
+    d = decide_intake_kcal([], avg, n, bootstrap_baseline=None)
+    assert d.label == "unconfirmed"
+    assert d.intake_kcal is None
