@@ -300,3 +300,47 @@ async def test_429_reset_seconds_in_state(httpx_mock):
     with pytest.raises(httpx.HTTPStatusError):
         await client.get_activity_summary("2026-05-25")
     assert client.rate_limit.reset_seconds == 600
+
+
+# --- Task 9.6: concurrent token refresh safety ----------------------------
+
+
+def test_concurrent_token_writes_dont_corrupt(tmp_path):
+    """並列 2 スレッドで save_token_atomic を 10 回ずつ呼ぶ → 最終状態が壊れない."""
+    import threading
+
+    from diet.db import Token, load_token, open_db, save_token_atomic
+
+    db_path = tmp_path / "t.db"
+    open_db(db_path).close()
+    errors: list[Exception] = []
+
+    def worker(prefix: str) -> None:
+        try:
+            conn = open_db(db_path)
+            for i in range(10):
+                save_token_atomic(
+                    conn,
+                    Token(
+                        f"{prefix}{i}",
+                        f"R{prefix}{i}",
+                        datetime(2030, 1, 1),
+                        "U",
+                    ),
+                )
+        except Exception as e:  # noqa: BLE001 — surface to assertion
+            errors.append(e)
+
+    t1 = threading.Thread(target=worker, args=("a",))
+    t2 = threading.Thread(target=worker, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert errors == [], f"concurrent writes corrupted: {errors}"
+    conn = open_db(db_path)
+    n = conn.execute("SELECT COUNT(*) FROM fitbit_token").fetchone()[0]
+    assert n == 1
+    tok = load_token(conn)
+    assert tok is not None
+    assert tok.access_token.startswith(("a", "b"))
