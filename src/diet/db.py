@@ -99,3 +99,65 @@ def get_events_in_range(conn, start: date, end: date) -> dict[date, DailyEvents]
         d = date.fromisoformat(r[1])
         result.setdefault(d, []).append(IntakeEvent(id=r[0], timestamp=datetime.fromisoformat(r[2]), kcal=r[3], op=r[4]))
     return {d: DailyEvents(events=ev) for d, ev in result.items()}
+
+
+@dataclass(frozen=True)
+class DailyActivityRow:
+    date: date
+    steps: int
+    distance_km: float
+    logged_activities_kcal: int | None
+    marginal_kcal: int | None
+
+
+def upsert_daily_activity(conn, d: date, steps: int, distance_km: float,
+                          logged_activities_kcal: int | None, marginal_kcal: int | None) -> None:
+    conn.execute(
+        """INSERT INTO daily_activity (date, steps, distance_km, logged_activities_kcal, marginal_kcal, last_synced)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(date) DO UPDATE SET
+             steps=excluded.steps, distance_km=excluded.distance_km,
+             logged_activities_kcal=excluded.logged_activities_kcal,
+             marginal_kcal=excluded.marginal_kcal,
+             last_synced=excluded.last_synced""",
+        (_ds(d), steps, distance_km, logged_activities_kcal, marginal_kcal, datetime.now().isoformat()),
+    )
+    conn.commit()
+
+
+def get_daily_activity(conn, d: date) -> DailyActivityRow | None:
+    row = conn.execute(
+        "SELECT date, steps, distance_km, logged_activities_kcal, marginal_kcal FROM daily_activity WHERE date = ?",
+        (_ds(d),),
+    ).fetchone()
+    if row is None:
+        return None
+    return DailyActivityRow(
+        date=date.fromisoformat(row[0]), steps=row[1], distance_km=row[2],
+        logged_activities_kcal=row[3], marginal_kcal=row[4],
+    )
+
+
+@dataclass(frozen=True)
+class DailyWeightRow:
+    date: date
+    weight_kg: float
+
+
+def upsert_daily_weight(conn, d: date, weight_kg: float) -> None:
+    conn.execute(
+        """INSERT INTO daily_weight (date, weight_kg, last_synced) VALUES (?, ?, ?)
+           ON CONFLICT(date) DO UPDATE SET weight_kg=excluded.weight_kg, last_synced=excluded.last_synced""",
+        (_ds(d), weight_kg, datetime.now().isoformat()),
+    )
+    conn.commit()
+
+
+def get_latest_weight_on_or_before(conn, d: date) -> DailyWeightRow | None:
+    row = conn.execute(
+        "SELECT date, weight_kg FROM daily_weight WHERE date <= ? ORDER BY date DESC LIMIT 1",
+        (_ds(d),),
+    ).fetchone()
+    if row is None:
+        return None
+    return DailyWeightRow(date=date.fromisoformat(row[0]), weight_kg=row[1])

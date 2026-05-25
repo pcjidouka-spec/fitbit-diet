@@ -7,6 +7,10 @@ from diet.db import (
     insert_intake_event,
     get_events_for_date,
     get_events_in_range,
+    upsert_daily_activity,
+    get_daily_activity,
+    upsert_daily_weight,
+    get_latest_weight_on_or_before,
 )
 from diet.intake import IntakeEvent
 
@@ -74,3 +78,37 @@ def test_get_events_for_date_ordering(tmp_path):
     events = get_events_for_date(conn, d)
     assert events[0].kcal == 200  # earlier timestamp
     assert events[1].kcal == 100
+
+
+# ---------- Task 2.3: daily_activity / daily_weight + no-time-machine ----------
+
+
+def test_daily_activity_upsert(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    upsert_daily_activity(conn, date(2026, 5, 25), 8234, 5.3, 280, 340)
+    a = get_daily_activity(conn, date(2026, 5, 25))
+    assert a.steps == 8234
+    upsert_daily_activity(conn, date(2026, 5, 25), 9000, 6.0, 300, 360)
+    a2 = get_daily_activity(conn, date(2026, 5, 25))
+    assert a2.steps == 9000
+
+
+def test_latest_weight_on_or_before(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    upsert_daily_weight(conn, date(2026, 5, 20), 72.0)
+    upsert_daily_weight(conn, date(2026, 5, 22), 71.5)
+    assert get_latest_weight_on_or_before(conn, date(2026, 5, 25)).weight_kg == 71.5
+
+
+def test_weight_no_time_machine(tmp_path):
+    """対象日より未来の体重は使わない"""
+    conn = open_db(tmp_path / "t.db")
+    upsert_daily_weight(conn, date(2026, 5, 22), 71.5)
+    upsert_daily_weight(conn, date(2026, 5, 26), 71.0)  # 未来
+    w = get_latest_weight_on_or_before(conn, date(2026, 5, 25))
+    assert w.weight_kg == 71.5
+
+
+def test_get_weight_returns_none_when_empty(tmp_path):
+    conn = open_db(tmp_path / "t.db")
+    assert get_latest_weight_on_or_before(conn, date(2026, 5, 25)) is None
