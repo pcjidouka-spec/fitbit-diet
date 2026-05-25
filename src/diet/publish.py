@@ -240,13 +240,41 @@ def publish_to_hpasaneel(
     rel = str(log_path.relative_to(repo_path)).replace("\\", "/")
     subprocess.run(["git", "add", rel], cwd=repo_path, check=True)
     dates = ", ".join(r.date.isoformat() for r in records)
+    rev = _next_rev(repo_path, dates)
+    suffix = "" if rev == 1 else f" (rev {rev})"
     subprocess.run(
-        ["git", "commit", "-m", f"diet: {dates} update"],
+        ["git", "commit", "-m", f"diet: {dates} update{suffix}"],
         cwd=repo_path,
         check=True,
     )
     if do_push:
         subprocess.run(["git", "push"], cwd=repo_path, check=True)
+
+
+def _next_rev(repo_path: Path, dates_label: str) -> int:
+    """Return N+1 where N = past commits whose message matches the dates label.
+
+    Used to suffix same-day re-publishes as ``(rev 2)``, ``(rev 3)``, …
+    Searches all refs so the count survives branches; failures (e.g. no
+    commits yet on a brand-new repo) fall back to rev 1.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "log",
+            "--all",
+            "--grep",
+            f"diet: {dates_label} update",
+            "--oneline",
+        ],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return 1
+    return len(result.stdout.strip().splitlines()) + 1
 
 
 @dataclass(frozen=True)

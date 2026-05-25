@@ -134,3 +134,49 @@ def test_diet_command_requires_init(tmp_path, monkeypatch):
     result = runner.invoke(app, [])
     assert result.exit_code != 0
     assert "init" in result.output.lower()
+
+
+# --- Task 9.4: rev N suffix on same-day re-publish -------------------------
+
+
+def test_same_day_republish_rev_n_suffix(tmp_path):
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    rec2 = PublicDayRecord(
+        date=date(2026, 5, 25), steps=2, distance_km=2.0, exercise_kcal=2, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec2], do_push=False)
+    log = subprocess.run(
+        ["git", "log", "--oneline"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    lines = log.stdout.splitlines()
+    # 最新 commit (1 行目) が "rev 2" 等を含む
+    assert any("rev 2" in l for l in lines[:2]) or any("(rev" in l for l in lines[:2])
+
+
+def test_first_publish_has_no_rev_suffix(tmp_path):
+    """First publish for a given date label must not carry any ``(rev N)``."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "rev" not in log.stdout
