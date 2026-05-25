@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（食事 kcal の平均補完ロジック追加, rev 6）
+- 最終更新: 2026-05-25（override authoritative / sample floor / bootstrap baseline, rev 7）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -104,52 +104,88 @@ Fitbit デバイスは 24 時間装着しない前提のため、Fitbit が出�
 
 ---
 
-## 4.5 食事 kcal の解釈ロジック（rev 6 追加）
+## 4.5 食事 kcal の解釈ロジック（rev 7 で大幅改訂）
 
-ユーザーは毎食必ず記録するとは限らないので、`intake_events` から **対象日の摂取 kcal（intake_kcal）** を以下のアルゴリズムで算出する。これはランタイム計算で、テーブルには保存しない。
+ユーザーは毎食必ず記録するとは限らないので、`intake_events` から **対象日の摂取 kcal（intake_kcal）** をランタイム算出する（テーブルに保存しない）。
+
+### 核となる区別: complete day vs partial day
+
+| 種別 | 定義 | 性質 |
+|---|---|---|
+| **complete day** | その日に **`op='override'` の event が 1 件以上**含まれる日 | 「今日の合計は X」とユーザーが宣言した日。authoritative。past_avg のサンプルプールに入る |
+| **partial day** | events はあるが `op='override'` が 0 件（`+` のみ）| 部分入力の可能性、authoritative ではない。サンプルプールには入らない |
+| **empty day** | events が 0 件 | 何もない |
 
 ### 用語
 
-- **today_events**: 対象日 (Asia/Tokyo) の `intake_events` レコード（時系列順）
-- **recorded_sum**: 対象日の event 群から算出した「ユーザーが明示的に記録した今日のカロリー合計」
-- **past_avg**: 対象日より前 14 日間で `intake_events` に 1 件以上記録のある日（記録あり日）の `recorded_sum` 平均
+- **today_events**: 対象日 (Asia/Tokyo) の `intake_events` を `ORDER BY timestamp ASC, id ASC` で取得
+- **recorded_sum**: today_events から op セマンティクスで算出した合計（None なら events 0 件）
+- **past_avg**: 過去 14 日のうち **complete day** の `recorded_sum` 平均
+- **N_samples**: past_avg を構成した complete day の件数
+- **SAMPLE_FLOOR**: 3（これ未満なら past_avg を信頼しない、設定値）
+- **bootstrap_baseline**: `diet init` で任意で聞いた「普段 1 日 X kcal くらい」の値（未設定なら None）
 
 ### recorded_sum の算出（op セマンティクス）
 
-- 対象日 events が空 → `recorded_sum = None`（記録なし）
-- 最後の `op='override'` 以降の events を採用:
-  - `override.kcal` を基底値、その後の `+append.kcal` をすべて加算
+events を時系列順に走査、最後の `op='override'` を境にロジック切替:
+
+- events 空 → `recorded_sum = None`
+- 最後の override 以降:
+  - override.kcal が基底値、その後の append.kcal をすべて加算
 - override が一度も無く append のみ → 全 append の合計
-- 例:
-  - `[+500, +300]` → 800
-  - `[+500, =2000, +200]` → 2200
-  - `[=2000]` → 2000
+- 例（時系列順）:
+  - `[+500, +300]` → 800（partial day）
+  - `[+500, =2000, +200]` → 2200（complete day、override 後の +200 を加算）
+  - `[=2000]` → 2000（complete day）
+  - `[=0]` → 0（complete day、断食日）
+  - `[=2000, =1500]` → 1500（complete day、後勝ち）
+
+**deterministic order**: 同 timestamp の events が複数ある時は `id ASC` で安定化（コードレビューで衝突が起きないように明示）。
 
 ### past_avg の算出
 
 ```sql
-SELECT date, <recorded_sum 算出と同じロジック> AS sum
-FROM intake_events
-WHERE date BETWEEN target_date - 14 days AND target_date - 1 day
-GROUP BY date
+WITH per_day AS (
+  SELECT date,
+         <recorded_sum 算出と同じロジック> AS sum,
+         MAX(CASE WHEN op = 'override' THEN 1 ELSE 0 END) AS has_override
+  FROM intake_events
+  WHERE date >= target_date - 14 days  -- ★ JST 日付で半開区間 [target_date - 14, target_date)
+    AND date <  target_date
+  GROUP BY date
+)
+SELECT AVG(sum), COUNT(*)
+FROM per_day
+WHERE has_override = 1   -- ★ complete day のみ
 ```
-の各日 `sum` の単純平均。記録あり日が 0 件なら `past_avg = None`。
 
-### 最終 intake_kcal の決定
+- **日付窓は JST 日付で `[target_date - 14, target_date)` の半開区間**（target_date - 14 を含み、target_date を含まない）
+- **complete day が 0 件 → past_avg = None, N_samples = 0**
+- 確定した N_samples は 4 ケース分岐の判断と表示に使う
 
-| recorded_sum | past_avg | intake_kcal | 表示 |
+### 最終 intake_kcal の決定（rev 7 完全書き直し）
+
+優先順位を上から評価:
+
+| 条件 | intake_kcal | label | 表示例 |
 |---|---|---|---|
-| `None` | `None` | `None`（収支算出不可）| 「記録なし、過去データ不足のため摂取量未確定」 |
-| `None` | あり | `past_avg` | 「推定 X kcal (過去 14 日平均)」|
-| あり | `None` | `recorded_sum` | 「記録 X kcal (過去データ不足のため平均補完なし)」|
-| あり | あり | `max(recorded_sum, past_avg)` | recorded ≥ avg なら「記録 X kcal」、recorded < avg なら「推定 X kcal (記録 Y + 平均補完 Z)」|
+| today に **override が 1 件以上** (complete day) | `recorded_sum` | `recorded_authoritative` | 「記録 1800 kcal」 |
+| today は partial で `recorded_sum is not None` & `past_avg` あり (N_samples ≥ SAMPLE_FLOOR) | `max(recorded_sum, past_avg)` | recorded ≥ avg → `recorded_partial_high`、recorded < avg → `estimated_avg_supplement` | 前者「記録 2400 kcal (部分入力)」、後者「推定 2100 kcal (記録 500 + 平均補完 1600、N=11)」|
+| today は partial で `recorded_sum is not None` & avg なし or N_samples < SAMPLE_FLOOR | `max(recorded_sum, bootstrap_baseline)` if baseline あり、else `recorded_sum` | `estimated_baseline_supplement` / `recorded_no_baseline` | 「推定 2000 kcal (記録 500 + baseline 補完 1500)」 |
+| today empty & past_avg あり (N_samples ≥ SAMPLE_FLOOR) | `past_avg` | `estimated_avg` | 「推定 1980 kcal (過去 14 日 complete day 平均, N=8)」 |
+| today empty & avg なし or N_samples < floor & baseline あり | `bootstrap_baseline` | `estimated_baseline` | 「推定 2000 kcal (init baseline)」 |
+| today empty & avg なし & baseline なし | `None` | `unconfirmed` | 「摂取量未確定 (記録なし、complete day が N 件しかない、baseline 未設定)」 |
 
 ### 設計判断
 
-- **「多い方」採用** の理由: 部分入力日（`+500` だけ打って終わり）が実際の摂取より小さく評価されるのを防ぐ。逆に「記録した値が平均を超える日」は実測の方が信頼できるのでそのまま使う
-- **「記録あり日」のみ平均** の理由: 「記録しなかった = 何も食べなかった」ではないので、ゼロを混ぜると平均を不当に下げる
+- **override が authoritative** な理由: `=0` 断食日や `=1200` 制限日が past_avg で水増しされたら設計目的が壊れる。codex rev6 指摘 #1
+- **complete day のみ past_avg のサンプルプール** な理由: partial 日を混ぜると平均が体系的に低くなる。codex rev6 指摘 #6
+- **SAMPLE_FLOOR=3** な理由: 1〜2 日では平均値の意味が薄い、ノイズが大きい。3 件以上で「過去日の代表値」として使う。codex rev6 指摘 #3
+- **bootstrap_baseline** な理由: 運用初期や complete day が 3 件未満の cold start 期に「未確定」連発を回避するための任意 fallback。silent invent は禁止、`diet init` で明示的に聞く。codex rev6 指摘 #4
+- **半開区間 `[target_date - 14, target_date)`** な理由: 包含/排他の曖昧さを排除、過去 14 日 = 14 個の calendar day と一致。codex rev6 指摘 #5
+- **`max(recorded, avg)` は partial day 限定** な理由: complete day は authoritative なので max を適用しない（適用するとユーザーの「これが今日の合計だ」宣言を無視することになる）
 - **平均はランタイム計算** → 過去日修正・新規追加で過去平均値が遡って更新される。テーブルにキャッシュしない
-- **`intake_kcal = None` の時** → § 5 [4] 収支表示は「摂取量未確定のため収支算出不可、明日以降の calibration 待ち」と表示し、publish は通常通り（運動・体重のみ）実行する
+- **`intake_kcal = None` の時** → § 5 [4] 収支表示は「摂取量未確定のため収支算出不可」と表示し、publish は通常通り（運動・体重のみ）実行する
 
 ---
 
@@ -169,14 +205,13 @@ $ diet
     > +500
     累積 2,300kcal (記録)
 
-  ※ Enter で skip した時の表示例:
-    入力 (+追加 / =上書き / Enter=skip):
-    >
-    推定 2,100kcal (過去 14 日平均、記録あり日 11 日から算出)
-
-  ※ 部分入力で平均より少なかった日:
-    > +500
-    推定 2,100kcal (記録 500 + 平均補完 1,600)
+  ※ 表示パターンの例（§ 4.5 の決定表に対応）:
+    [今日 override あり、`=2300` 入力]      → 「記録 2,300kcal」（authoritative）
+    [今日 partial、入力 < 平均、N=11]       → 「推定 2,100kcal (記録 500 + 平均補完 1,600、過去 N=11)」
+    [今日 partial、入力 ≥ 平均]             → 「記録 2,400kcal (部分入力、過去平均超え)」
+    [今日 empty、N=8]                       → 「推定 1,980kcal (過去 14 日 complete day 平均、N=8)」
+    [今日 empty、N<3、baseline=2000]        → 「推定 2,000kcal (init baseline、complete day N=2 のため平均未使用)」
+    [今日 empty、N=0、baseline 未設定]      → 「摂取量未確定」（収支算出スキップ）
 
 [3/5 基礎代謝] BMR (46歳/男性/169cm/71.2kg) = 1,543kcal
 
@@ -210,8 +245,10 @@ config (
   timezone               TEXT,        -- 'Asia/Tokyo'
   hpasaneel_path         TEXT,        -- 'C:/code/HPasaneel'
   hpasaneel_diet_root    TEXT,        -- 'content/diet'
-  exercise_calorie_source TEXT        -- 'logged_activities' | 'marginal' | 'steps_estimated'
+  exercise_calorie_source TEXT,       -- 'logged_activities' | 'marginal' | 'steps_estimated'
                                       -- 初期は NULL、calibrate 後に確定
+  bootstrap_daily_kcal   INTEGER      -- diet init で任意で入れる「普段 1 日 X kcal」
+                                      -- cold start 期の fallback、未設定なら NULL
 )
 
 -- 食事イベント（1 回ごと append）
@@ -402,13 +439,17 @@ $ diet init
 タイムゾーン [Asia/Tokyo]:
 HPasaneel リポジトリパス [C:/code/HPasaneel]:
 HPasaneel ダッシュボードルート [content/diet]:
+普段 1 日に食べているカロリーの目安 (cold start fallback、不明なら Enter で skip):
+  > 2000
 
-→ data/diet.db 作成、config 保存
+→ data/diet.db 作成、config 保存 (bootstrap_daily_kcal=2000)
 → Fitbit OAuth フロー起動（ブラウザが開く）
 → http://localhost:8765/callback で token 受け取り → DB 保存
 → 初回 sync 実行（過去 30 日分を遡って取得、カロリー 2 候補を両方保存）
 → 「次に `diet calibrate` を実行して exercise_kcal の値を決めてください」と案内
 ```
+
+bootstrap baseline は **complete day が 3 件未満（SAMPLE_FLOOR）の cold start 期** だけ使われる。complete day が貯まれば自動的に past_avg が優先される。後から `diet baseline 2200` で更新可能（rev 7 で CLI 追加、§ 9 参照）。
 
 ### 4. `diet calibrate`（codex Scope 対応：新規追加コマンド）
 
@@ -490,6 +531,7 @@ C:/code/HPasaneel/
 | `diet weight 71.2` | 体重を手動入力（Renpho 同期不全時の fallback、当日 or `--date` 指定可） |
 | `diet sync` | Fitbit sync のみ実行（対話なし、cron 用） |
 | `diet show [--date YYYY-MM-DD]` | 指定日（デフォルト今日）の収支を表示のみ（食事入力・publish なし） |
+| `diet baseline 2200` | bootstrap_daily_kcal の更新（cold start 期の見直し用） |
 
 ---
 
@@ -522,8 +564,9 @@ C:/code/HPasaneel/
 | 当日体重が Renpho 未同期 | **対象日以前**の最新体重を使う（タイムマシン禁止）、「N 日前 (71.5kg) を使用」と警告 |
 | 30 日以上前まで遡っても体重無し | `diet weight 71.2` での手動入力を促す |
 | 食事 0 kcal（断食日） | 許可 |
-| 食事入力スキップ（Enter）| § 4.5 に従い `past_avg` で推定。過去 14 日に記録あり日が 1 件以上あれば「推定 X kcal」と表示、0 件なら「摂取量未確定」で収支算出をスキップ。publish は運動・体重のみ実行 |
-| 過去 14 日に記録あり日が 0 件（運用初期）| 「記録なし、過去データ不足のため摂取量未確定」と表示、収支は出さない |
+| 食事入力スキップ（Enter）| § 4.5 の決定表に従う: complete day が N≥3 あれば past_avg、なければ bootstrap_baseline、それも無ければ「摂取量未確定」で収支算出スキップ。publish は運動・体重のみ実行 |
+| 過去 14 日の complete day が 0 件かつ bootstrap_baseline 未設定（運用初期）| 「摂取量未確定」と表示、収支は出さない。`diet baseline X` で baseline 設定を促す |
+| `=0` 入力（断食日）| complete day として 0 kcal で確定、past_avg や baseline で水増ししない |
 | 過去日入力 | `diet --date 2026-05-23` で全フローが過去日で動く。年齢・体重も対象日基準。publish も該当日の entry を更新 |
 | 同じ日に複数回 publish | log.json の該当 entry を上書き、commit メッセージは `diet: 2026-05-25 update (rev N)` |
 | HPasaneel に未コミット変更あり | 「他に未コミット変更があります、続けますか? [y/N]」を確認。yes なら log.json のみ stage |
@@ -539,11 +582,26 @@ C:/code/HPasaneel/
 ## 12. テスト方針
 
 - **`intake.py`** — 食事 kcal 算出（純粋関数、テスト容易）:
-  - `recorded_sum` の op セマンティクス: append のみ・override 後 append・複数 override の最後採用、を網羅
-  - `past_avg`: 記録あり日 0 件で `None` を返す、14 日窓の端日（target_date - 14 含む or 含まない？仕様明示）
-  - `intake_kcal` の 4 ケース分岐表すべてをテスト
-  - max(recorded, avg) の境界（recorded == avg、recorded > avg、recorded < avg）
-  - 部分入力後の表示文字列が「記録 Y + 平均補完 Z」フォーマットになること
+  - `recorded_sum` の op セマンティクス:
+    - `[+500, +300]` → 800 (partial)
+    - `[+500, =2000, +200]` → 2200 (complete, override 後の append 加算)
+    - `[=2000]` → 2000 (complete)
+    - `[=0]` → 0 (complete、断食日)
+    - `[=2000, =1500]` → 1500 (complete、後勝ち)
+    - 同 timestamp 複数 → `id ASC` で決定的
+  - complete day 判定: events に `op='override'` が 1 件以上含まれるか
+  - `past_avg` 算出:
+    - complete day のみサンプル
+    - **N_samples < SAMPLE_FLOOR (=3) なら past_avg を None 扱い**
+    - 日付窓は JST `[target_date - 14, target_date)` の半開区間（境界日テスト必須）
+    - 過去 14 日に complete day 0 件 → past_avg=None
+    - 過去 14 日に complete day 2 件 → past_avg=None (floor 未達)
+    - 過去 14 日に complete day 3 件 → past_avg=平均、N_samples=3
+  - `intake_kcal` の 6 ケース分岐表すべてをテスト（§ 4.5 表のすべての行）
+  - bootstrap_baseline 適用シナリオ（N<floor で baseline あり / なし）
+  - `=0` 断食日が past_avg・baseline で水増しされないこと（最重要回帰防止テスト）
+  - 過去日修正で N_samples と past_avg が再計算されること（キャッシュなし）
+  - 表示文字列フォーマット: 各 label に対応するメッセージ生成
 - **`bmr.py`** — 純粋関数なので網羅的ユニットテスト
   - 過去日入力時の年齢計算（生年月日跨ぎを含む）
   - Asia/Tokyo と UTC の境界日テスト
@@ -607,6 +665,16 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 7 (2026-05-25) — intake fallback 厳密化
+| codex 指摘 | 反映場所 |
+|---|---|
+| #1 HIGH: `=0` 断食日が max(recorded,avg) で水増しされる | § 4.5 complete day = authoritative とし、override 日は max を適用しない。決定表を 6 ケースに拡張 |
+| #6 HIGH: past_avg のサンプルに partial 日が混ざると体系的に低下 | § 4.5 past_avg のサンプルプールを **complete day のみ** に限定 |
+| #2 MEDIUM: events の deterministic order | § 4.5 `ORDER BY timestamp ASC, id ASC` 明記、§ 12 テスト |
+| #3 MEDIUM: sample size floor | § 4.5 SAMPLE_FLOOR=3 導入、未達なら past_avg を信頼しない |
+| #4 MEDIUM: cold-start bootstrap baseline | § 6 config に `bootstrap_daily_kcal`、§ 8 init 対話に追加、§ 9 CLI に `diet baseline` 追加、§ 4.5 fallback 順 (past_avg → baseline → 未確定) |
+| #5 LOW: 14 日窓の半開区間明示 | § 4.5 `[target_date - 14, target_date)` JST、§ 12 境界テスト追加 |
 
 ### rev 6 (2026-05-25) — intake kcal 平均補完
 | 変更内容 | 反映場所 |
