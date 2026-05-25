@@ -36,3 +36,13 @@ class FitbitClient:
             self._update_rate_limit(r.headers)
             r.raise_for_status()
             return r.json()
+
+    async def get_weight_log(self, date_str: str) -> list[dict]:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.BASE}/1/user/-/body/log/weight/date/{date_str}.json",
+                headers=self._headers(), timeout=30.0,
+            )
+            self._update_rate_limit(r.headers)
+            r.raise_for_status()
+            return r.json().get("weight", [])
