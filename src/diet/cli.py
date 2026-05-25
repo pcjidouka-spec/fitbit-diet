@@ -83,6 +83,24 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
+@click.argument("kcal", type=click.IntRange(min=1))
+def baseline(kcal: int) -> None:
+    """Update bootstrap_daily_kcal."""
+    from dataclasses import replace
+
+    from diet.db import load_config, save_config
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    save_config(conn, replace(cfg, bootstrap_daily_kcal=kcal))
+    click.echo(f"baseline updated to {kcal} kcal/day")
+
+
+@app.command()
 @click.argument("kg", type=click.FloatRange(min=0.0, min_open=True))
 @click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
 def weight(kg: float, date_str: str | None) -> None:
