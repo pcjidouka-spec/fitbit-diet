@@ -559,3 +559,51 @@ def test_cli_auth_regen_cert_replaces_files(tmp_path, monkeypatch, mocker):
     assert cert.exists()
     assert cert.read_bytes() != original_bytes
     spy.assert_called_once()
+
+
+# --- Task 9.11: refresh failure routes to ``diet auth`` -------------------
+
+
+async def test_refresh_failure_with_revoked_token_propagates(httpx_mock):
+    """refresh エンドポイントが 400 (invalid_grant) を返す → 例外を上層で捕捉する."""
+    import httpx
+
+    from diet.oauth import refresh_access_token
+
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token",
+        method="POST",
+        status_code=400,
+        json={"errors": [{"errorType": "invalid_grant"}]},
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await refresh_access_token("CID", "CSEC", "REVOKED_REFRESH")
+
+
+def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mocker):
+    """sync 中に refresh が失敗 → ``diet auth`` を案内して exit 非 0."""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import Config, Token, open_db, save_config, save_token_atomic
+
+    conn = open_db(tmp_path / "diet.db")
+    save_config(
+        conn,
+        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
+    )
+    save_token_atomic(conn, Token("A", "R_REVOKED", datetime(2030, 1, 1), "UID"))
+    import httpx
+
+    mocker.patch(
+        "diet.cli_helpers.run_sync_async",
+        side_effect=httpx.HTTPStatusError(
+            "refresh failed",
+            request=mocker.MagicMock(),
+            response=mocker.MagicMock(),
+        ),
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync"])
+    assert result.exit_code != 0
+    assert "diet auth" in result.output
