@@ -83,7 +83,7 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
-@click.option("--days", default=7, type=int)
+@click.option("--days", default=7, type=click.IntRange(min=1))
 def sync(days: int) -> None:
     """Fetch Fitbit activity + weight for the last N days."""
     import asyncio
