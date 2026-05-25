@@ -180,3 +180,32 @@ def test_first_publish_has_no_rev_suffix(tmp_path):
         text=True,
     )
     assert "rev" not in log.stdout
+
+
+def test_republish_after_multi_date_commit_still_bumps_rev(tmp_path):
+    """Codex P2 regression: a single-date republish that follows a multi-date
+    commit must still get a ``(rev 2)`` suffix because the same date was
+    already published once — even though the labels differ exactly."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec_a = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    rec_b = PublicDayRecord(
+        date=date(2026, 5, 26), steps=2, distance_km=2.0, exercise_kcal=2, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec_a, rec_b], do_push=False)
+    # Now republish just 2026-05-25 → should be detected as a 2nd publish
+    rec_a2 = PublicDayRecord(
+        date=date(2026, 5, 25), steps=9, distance_km=9.0, exercise_kcal=9, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec_a2], do_push=False)
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "rev 2" in log.stdout

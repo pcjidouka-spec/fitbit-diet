@@ -240,7 +240,7 @@ def publish_to_hpasaneel(
     rel = str(log_path.relative_to(repo_path)).replace("\\", "/")
     subprocess.run(["git", "add", rel], cwd=repo_path, check=True)
     dates = ", ".join(r.date.isoformat() for r in records)
-    rev = _next_rev(repo_path, dates)
+    rev = _next_rev(repo_path, [r.date.isoformat() for r in records])
     suffix = "" if rev == 1 else f" (rev {rev})"
     subprocess.run(
         ["git", "commit", "-m", f"diet: {dates} update{suffix}"],
@@ -251,22 +251,21 @@ def publish_to_hpasaneel(
         subprocess.run(["git", "push"], cwd=repo_path, check=True)
 
 
-def _next_rev(repo_path: Path, dates_label: str) -> int:
-    """Return N+1 where N = past commits whose message matches the dates label.
+def _next_rev(repo_path: Path, date_labels: list[str]) -> int:
+    """Return N+1 where N = past commits that touched ANY of the given dates.
 
-    Used to suffix same-day re-publishes as ``(rev 2)``, ``(rev 3)``, …
-    Searches all refs so the count survives branches; failures (e.g. no
-    commits yet on a brand-new repo) fall back to rev 1.
+    Counted per-date (not per joined label) so a multi-date publish such as
+    ``diet: 2026-05-25, 2026-05-26 update`` still bumps the rev for a later
+    single-date republish of ``2026-05-25`` — and vice versa, regardless of
+    label ordering. Failures (brand-new repo with no commits) fall back to 1.
     """
+    # `git log --grep` accepts multiple --grep flags with implicit OR.
+    cmd = ["git", "log", "--all", "--oneline"]
+    for d in date_labels:
+        cmd.extend(["--grep", f"diet: .*{d}.* update"])
+    cmd.extend(["--extended-regexp"])
     result = subprocess.run(
-        [
-            "git",
-            "log",
-            "--all",
-            "--grep",
-            f"diet: {dates_label} update",
-            "--oneline",
-        ],
+        cmd,
         cwd=repo_path,
         capture_output=True,
         text=True,
