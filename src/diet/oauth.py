@@ -119,6 +119,36 @@ async def refresh_access_token(client_id: str, client_secret: str, refresh_token
     }, client_id, client_secret)
 
 
+def run_init_flow(data_dir: Path, port: int, conn) -> None:
+    """Generate cert, build URL, open browser, run callback, save token."""
+    import asyncio
+    import os
+    import secrets
+    import webbrowser
+
+    from diet.db import save_token_atomic
+
+    cert = data_dir / "oauth_cert.pem"
+    key = data_dir / "oauth_key.pem"
+    generate_self_signed_cert(cert, key, "localhost", 3650)
+    client_id = os.environ["FITBIT_CLIENT_ID"]
+    client_secret = os.environ["FITBIT_CLIENT_SECRET"]
+    redirect = f"https://localhost:{port}/callback"
+    state = secrets.token_urlsafe(16)
+    url = build_authorization_url(client_id, redirect, ["activity", "weight"], state)
+    print(f"ブラウザを開いて以下の URL にアクセスしてください:\n{url}")
+    print("（初回は証明書警告 → Advanced → Proceed to localhost (unsafe)）")
+    webbrowser.open(url)
+    cb = run_callback_server(cert, key, port=port)
+    if cb.error or not cb.code or cb.state != state:
+        raise RuntimeError(f"OAuth failed: error={cb.error}, state mismatch?")
+    tok = asyncio.run(
+        exchange_code_for_token(client_id, client_secret, cb.code, redirect)
+    )
+    save_token_atomic(conn, tok)
+    print("Fitbit OAuth 成功、token 保存完了。")
+
+
 async def _token_request(data: dict, client_id: str, client_secret: str) -> Token:
     auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
     headers = {
