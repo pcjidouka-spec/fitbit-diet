@@ -1,0 +1,68 @@
+#!/bin/sh
+
+PENDING_FILE="MEMORY_PENDING.md"
+COMMIT_HASH=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+COMMIT_DATE=$(git log -1 --pretty=format:"%ci")
+PREV_HASH=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+
+if [ -z "$PREV_HASH" ]; then
+  CHANGED_FILES=$(git diff-tree --no-commit-id -r --name-only HEAD)
+else
+  CHANGED_FILES=$(git diff --name-only "$PREV_HASH" HEAD)
+fi
+
+cat > "$PENDING_FILE" << EOF
+# MEMORY_PENDING.md — AI再整理待ちの差分ログ
+
+> このファイルは post-commit hook が自動生成しました。
+> Cursor で \`@MEMORY.md @MEMORY_PENDING.md\` を参照して整理を依頼してください。
+
+生成日時: $COMMIT_DATE
+コミットハッシュ: $COMMIT_HASH
+コミットメッセージ: $COMMIT_MSG
+
+---
+
+## 今回のコミットで変更されたファイル
+
+\`\`\`text
+$CHANGED_FILES
+\`\`\`
+
+---
+
+## 前回コミットからの差分（要約用）
+
+EOF
+
+if [ -z "$PREV_HASH" ]; then
+  cat >> "$PENDING_FILE" << EOF
+\`\`\`text
+（初回コミットのため比較対象なし）
+\`\`\`
+EOF
+else
+  printf '```text\n' >> "$PENDING_FILE"
+  git diff --stat "$PREV_HASH" HEAD >> "$PENDING_FILE"
+  printf '```\n' >> "$PENDING_FILE"
+fi
+
+cat >> "$PENDING_FILE" << 'EOF'
+
+---
+
+## AIへの指示テンプレート
+
+```text
+@MEMORY.md @MEMORY_PENDING.md
+上記2つのファイルを参照して、MEMORY.mdを再整理してください。
+- MEMORY_PENDING.md の変更内容を適切なセクションに反映する
+- セッションサマリーに今回のコミット内容を追記する
+- 完了したタスクを「確定済み意思決定」または「セッションサマリー」へ移動する
+- 最終同期コミットのハッシュを更新する
+- 反映後は MEMORY_PENDING.md の内容を初期状態へ戻す
+```
+EOF
+
+echo "[MEMORY] MEMORY_PENDING.md を更新しました"
