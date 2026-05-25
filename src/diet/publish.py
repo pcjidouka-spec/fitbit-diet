@@ -185,6 +185,20 @@ def publish_to_hpasaneel(
         if not proceed:
             click.echo("publish aborted by user.")
             sys.exit(1)
+        # User confirmed overwrite. Discard the dirty working-tree version by
+        # restoring the committed copy (or removing the file if it is only
+        # untracked) — otherwise the subsequent `json.loads` below would
+        # consume the dirty content and either crash or silently re-publish it.
+        if status.stdout.lstrip().startswith("??"):
+            # Untracked dirty file: nothing in HEAD to restore. Just remove it
+            # so the existing-doc load below sees no prior content.
+            log_path.unlink()
+        else:
+            subprocess.run(
+                ["git", "checkout", "HEAD", "--", rel_log],
+                cwd=repo_path,
+                check=True,
+            )
 
     if do_push:
         subprocess.run(["git", "pull", "--rebase"], cwd=repo_path, check=True)

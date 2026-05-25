@@ -106,3 +106,45 @@ def test_publish_aborts_on_manual_log_changes(tmp_path):
     with patch("click.confirm", return_value=False):
         with pytest.raises(SystemExit):
             publish_to_hpasaneel(repo, "content/diet", [rec2], do_push=False)
+
+
+def test_publish_overwrites_dirty_log_when_user_confirms(tmp_path):
+    """When the user confirms 'yes' to overwrite manual log.json edits, the
+    dirty working-tree content must be DISCARDED before merge — otherwise
+    the next json.loads either crashes (invalid JSON) or silently keeps
+    whatever bogus fields the user typed in.
+
+    Regression test for codex review P2 finding on commit 3525e36."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25),
+        steps=1,
+        distance_km=1.0,
+        exercise_kcal=50,
+        weight_kg=70.0,
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    log_file = repo / "content/diet/log.json"
+    # Inject invalid trailing garbage that would crash json.loads.
+    log_file.write_text(log_file.read_text(encoding="utf-8") + "\n# manual mess",
+                        encoding="utf-8")
+    rec2 = PublicDayRecord(
+        date=date(2026, 5, 26),
+        steps=2,
+        distance_km=2.0,
+        exercise_kcal=60,
+        weight_kg=70.0,
+    )
+    # User confirms overwrite — must NOT crash, must produce a clean log.json.
+    with patch("click.confirm", return_value=True):
+        publish_to_hpasaneel(repo, "content/diet", [rec2], do_push=False)
+    import json as _json
+    final = _json.loads(log_file.read_text(encoding="utf-8"))
+    dates = [d["date"] for d in final["days"]]
+    # The new date got published, the old committed date is preserved,
+    # and the "# manual mess" garbage is gone.
+    assert "2026-05-26" in dates
+    assert "2026-05-25" in dates
+    assert "manual mess" not in log_file.read_text(encoding="utf-8")
