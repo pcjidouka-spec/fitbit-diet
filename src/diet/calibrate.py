@@ -9,6 +9,10 @@ from diet.db import get_daily_activity, load_config, open_db, save_config
 def run_calibrate(data_dir, days: int = 14) -> None:
     conn = open_db(data_dir / "diet.db")
     cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
     today = date.today()
     click.echo(f"過去 {days} 日の Fitbit カロリー候補:")
     click.echo(
