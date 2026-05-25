@@ -83,6 +83,25 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
+@click.option("--port", default=8765, type=click.IntRange(min=1, max=65535))
+@click.option("--regen-cert", is_flag=True, help="証明書を再生成 (期限切れ時)")
+def auth(port: int, regen_cert: bool) -> None:
+    """Re-run OAuth (without re-prompting profile)."""
+    from diet.oauth import generate_self_signed_cert, run_init_flow
+
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    conn = open_db(data_dir / "diet.db")
+    if regen_cert:
+        cert = data_dir / "oauth_cert.pem"
+        key = data_dir / "oauth_key.pem"
+        cert.unlink(missing_ok=True)
+        key.unlink(missing_ok=True)
+        generate_self_signed_cert(cert, key, "localhost", days_valid=3650)
+    run_init_flow(data_dir=data_dir, port=port, conn=conn)
+
+
+@app.command()
 @click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
 def show(date_str: str | None) -> None:
     """Display-only mode (no Fitbit sync, no publish)."""
