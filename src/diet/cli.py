@@ -83,7 +83,7 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
-@click.argument("kg", type=float)
+@click.argument("kg", type=click.FloatRange(min=0.0, min_open=True))
 @click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
 def weight(kg: float, date_str: str | None) -> None:
     """Manually record a weight reading."""
