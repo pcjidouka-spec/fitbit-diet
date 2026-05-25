@@ -1,5 +1,9 @@
 import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
+
+from diet.intake import IntakeEvent, DailyEvents
 
 MIGRATION_SQL = """
 CREATE TABLE IF NOT EXISTS _meta (schema_version INTEGER NOT NULL);
@@ -61,3 +65,37 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.executescript(MIGRATION_SQL)
     conn.commit()
     return conn
+
+
+def _ds(d: date) -> str:
+    return d.isoformat()
+
+
+def insert_intake_event(conn, d: date, ts: datetime, kcal: int, op: str, note: str | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO intake_events (date, timestamp, kcal, op, note) VALUES (?, ?, ?, ?, ?)",
+        (_ds(d), ts.isoformat(), kcal, op, note),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_events_for_date(conn, d: date) -> list[IntakeEvent]:
+    rows = conn.execute(
+        "SELECT id, timestamp, kcal, op FROM intake_events WHERE date = ? ORDER BY timestamp ASC, id ASC",
+        (_ds(d),),
+    ).fetchall()
+    return [IntakeEvent(id=r[0], timestamp=datetime.fromisoformat(r[1]), kcal=r[2], op=r[3]) for r in rows]
+
+
+def get_events_in_range(conn, start: date, end: date) -> dict[date, DailyEvents]:
+    """Half-open: [start, end)."""
+    rows = conn.execute(
+        "SELECT id, date, timestamp, kcal, op FROM intake_events WHERE date >= ? AND date < ? ORDER BY date, timestamp, id",
+        (_ds(start), _ds(end)),
+    ).fetchall()
+    result: dict[date, list[IntakeEvent]] = {}
+    for r in rows:
+        d = date.fromisoformat(r[1])
+        result.setdefault(d, []).append(IntakeEvent(id=r[0], timestamp=datetime.fromisoformat(r[2]), kcal=r[3], op=r[4]))
+    return {d: DailyEvents(events=ev) for d, ev in result.items()}
