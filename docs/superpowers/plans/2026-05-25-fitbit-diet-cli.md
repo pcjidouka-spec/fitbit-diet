@@ -2053,13 +2053,19 @@ def test_auth_calls_oauth_flow(tmp_path, monkeypatch, mocker):
 @click.option("--regen-cert", is_flag=True, help="証明書を再生成 (期限切れ時)")
 def auth(port: int, regen_cert: bool) -> None:
     """Re-run OAuth (when refresh fails or cert expired)."""
-    from diet.oauth import run_init_flow
+    from diet.oauth import run_init_flow, generate_self_signed_cert
     conn = open_db(_data_dir() / "diet.db")
     if regen_cert:
-        for f in ["oauth_cert.pem", "oauth_key.pem"]:
-            (_data_dir() / f).unlink(missing_ok=True)
+        # 削除した上で eager に再生成する。run_init_flow を mock しても cert は出来てる
+        cert = _data_dir() / "oauth_cert.pem"
+        key = _data_dir() / "oauth_key.pem"
+        cert.unlink(missing_ok=True)
+        key.unlink(missing_ok=True)
+        generate_self_signed_cert(cert, key, "localhost", days_valid=3650)
     run_init_flow(data_dir=_data_dir(), port=port, conn=conn)
 ```
+
+注: `run_init_flow` も内部で `generate_self_signed_cert` を呼ぶが、同じ実装は両ファイル存在時に no-op なので問題ない。`--regen-cert` 時のみ削除 → 即再生成で、run_init_flow が mock されても確実に新しい cert/key が存在する。
 
 - [ ] **Step 4-5**: Pass, `git commit -m "feat(cli): diet auth + --regen-cert"`
 
