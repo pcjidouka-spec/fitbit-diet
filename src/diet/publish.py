@@ -12,7 +12,7 @@ Two layers of allowlist defence:
 Never import this module from any layer that reads `intake_events`.
 """
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 
 import jsonschema
 
@@ -57,6 +57,47 @@ def validate_log_json(doc: dict) -> None:
     raw-load and final-write boundaries (see ``build_log_json``).
     """
     jsonschema.validate(doc, LOG_JSON_SCHEMA)
+
+
+def _assemble_final_dict(
+    records: list[PublicDayRecord], existing_doc: dict | None
+) -> dict:
+    """Pure function: merge ``records`` into ``existing_doc['days']``, sort
+    descending by date, and attach an ``updated_at`` timestamp.
+
+    Exposed as an internal seam so the final-write reject test can poison the
+    output and still observe that ``build_log_json`` rejects it at stage 2.
+    """
+    if existing_doc is not None:
+        existing_by_date = {d["date"]: d for d in existing_doc["days"]}
+    else:
+        existing_by_date = {}
+    for r in records:
+        existing_by_date[r.date.isoformat()] = r.to_public_dict()
+    return {
+        "updated_at": datetime.now(timezone.utc)
+        .astimezone()
+        .isoformat(timespec="seconds"),
+        "days": sorted(
+            existing_by_date.values(), key=lambda d: d["date"], reverse=True
+        ),
+    }
+
+
+def build_log_json(
+    records: list[PublicDayRecord], existing_doc: dict | None
+) -> dict:
+    """Build the final log.json dict from new records + optional existing doc.
+
+    Enforces 2-stage validation:
+      1. raw load — reject if existing_doc has any forbidden field
+      2. final write — reject if the assembled dict is non-compliant
+    """
+    if existing_doc is not None:
+        validate_log_json(existing_doc)  # stage 1: raw load
+    final = _assemble_final_dict(records, existing_doc)
+    validate_log_json(final)  # stage 2: final write
+    return final
 
 
 @dataclass(frozen=True)
