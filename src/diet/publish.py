@@ -252,28 +252,39 @@ def publish_to_hpasaneel(
 
 
 def _next_rev(repo_path: Path, date_labels: list[str]) -> int:
-    """Return N+1 where N = past commits that touched ANY of the given dates.
+    """Return N+1 where N = max past-publish count across the given dates.
 
-    Counted per-date (not per joined label) so a multi-date publish such as
-    ``diet: 2026-05-25, 2026-05-26 update`` still bumps the rev for a later
-    single-date republish of ``2026-05-25`` — and vice versa, regardless of
-    label ordering. Failures (brand-new repo with no commits) fall back to 1.
+    Counted *per date* and then reduced via ``max`` so:
+      - a single-date republish that follows a multi-date commit still gets
+        ``(rev 2)`` (the date itself was published once),
+      - a multi-date publish whose dates each have separate prior histories
+        does NOT compound (publishing ``[25, 26]`` after two separate
+        single-date publishes is still ``(rev 2)`` for each, so the shared
+        suffix is ``(rev 2)`` — not ``(rev 3)``).
+
+    Failures (brand-new repo with no commits, missing git, etc.) fall back
+    to rev 1 so first publishes never carry a bogus suffix.
     """
-    # `git log --grep` accepts multiple --grep flags with implicit OR.
-    cmd = ["git", "log", "--all", "--oneline"]
+    counts: list[int] = []
     for d in date_labels:
-        cmd.extend(["--grep", f"diet: .*{d}.* update"])
-    cmd.extend(["--extended-regexp"])
-    result = subprocess.run(
-        cmd,
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+        result = subprocess.run(
+            ["git", "log", "--all", "--oneline", "--grep", d],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return 1
+        # Each line is one prior publish that mentioned this date in its
+        # commit message; --grep matches any substring so ``diet: 2026-05-25
+        # update`` and ``diet: 2026-05-25, 2026-05-26 update`` both count.
+        counts.append(
+            sum(1 for _ in result.stdout.strip().splitlines() if _.strip())
+        )
+    if not counts:
         return 1
-    return len(result.stdout.strip().splitlines()) + 1
+    return max(counts) + 1
 
 
 @dataclass(frozen=True)

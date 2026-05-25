@@ -209,3 +209,39 @@ def test_republish_after_multi_date_commit_still_bumps_rev(tmp_path):
         text=True,
     )
     assert "rev 2" in log.stdout
+
+
+def test_multi_date_republish_does_not_inflate_rev(tmp_path):
+    """Codex follow-up P2: publishing ``[A, B]`` after separate single-date
+    publishes of ``A`` and ``B`` must produce ``(rev 2)`` — not ``(rev 3)``.
+    Each date has only been touched once before, so the per-date max is 1,
+    and the next publish is rev 2 regardless of the union total."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec_a = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    rec_b = PublicDayRecord(
+        date=date(2026, 5, 26), steps=2, distance_km=2.0, exercise_kcal=2, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec_a], do_push=False)
+    publish_to_hpasaneel(repo, "content/diet", [rec_b], do_push=False)
+    # Now publish both together with new values → should be rev 2
+    # (each date's prior count is 1, so the suffix is max + 1 = 2)
+    rec_a2 = PublicDayRecord(
+        date=date(2026, 5, 25), steps=11, distance_km=1.1, exercise_kcal=11, weight_kg=70.1
+    )
+    rec_b2 = PublicDayRecord(
+        date=date(2026, 5, 26), steps=22, distance_km=2.2, exercise_kcal=22, weight_kg=70.2
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec_a2, rec_b2], do_push=False)
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "rev 2" in log.stdout
+    assert "rev 3" not in log.stdout
