@@ -2,13 +2,15 @@ import os
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from diet.db import open_db, save_config, Config
 
 # Load .env at CLI import time so FITBIT_CLIENT_ID / FITBIT_CLIENT_SECRET
 # (and any other env-driven config) are available throughout the process.
-load_dotenv()
+# usecwd=True ensures we find the user's .env in the directory where they
+# invoke `diet`, not the one next to cli.py in site-packages.
+load_dotenv(find_dotenv(usecwd=True))
 
 
 def _data_dir() -> Path:
