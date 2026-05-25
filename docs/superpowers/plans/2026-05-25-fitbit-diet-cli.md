@@ -17,6 +17,7 @@
 **Plan version history:**
 - rev 1 (a04a630) → codex GO-WITH-FIXES、placeholder/granularity/edge case 不足
 - rev 2 → 全 CLI コマンドを TDD タスクに展開、§11 各エッジケースに個別タスク、Phase 8 "use client" 対応、boundary test 強化
+- rev 3 → codex rev2 review 反映: 2-stage validate の独立 reject test、SQL trace_callback、Phase 9 全テストを具体化、cur_sum を recorded_sum 経由、page.tsx vs DietCharts.tsx の役割明確化
 
 ---
 
@@ -74,8 +75,8 @@ tests/
 ### HPasaneel 側 (`C:/code/HPasaneel/`)
 
 ```
-app/diet/page.tsx                 # ★ "use client" 必要 (recharts は client-only)
-app/diet/DietCharts.tsx           # 別ファイルで client component 分離 (page.tsx は server)
+app/diet/page.tsx                 # server component。log.json を import → props で client に渡す
+app/diet/DietCharts.tsx           # ★ "use client" — recharts を含む実描画はこちら
 app/layout.tsx                    # メインナビに "Diet" 追加（既存編集）
 content/diet/log.json             # diet コマンドが書き出す（commit 対象）
 package.json                      # recharts 依存追加
@@ -181,7 +182,7 @@ import click
 def app(ctx: click.Context) -> None:
     """Personal diet tracking CLI."""
     if ctx.invoked_subcommand is None:
-        # 引数なし: デフォルト対話フローへ (Task 6.10 で実装)
+        # 引数なし: デフォルト対話フローへ (Task 6.8 で本実装)
         click.echo("orchestrator not yet implemented")
 ```
 
@@ -1275,8 +1276,8 @@ import pytest
 from diet.publish import build_log_json, PublicDayRecord
 from datetime import date
 
-def test_raw_load_validates_existing_doc():
-    """既存 log.json に note が混入してた → raw load 段で例外停止"""
+def test_raw_load_rejects_poisoned_existing_doc():
+    """raw load 段: 既存 log.json に note が混入してた → 例外停止"""
     poisoned = {
         "updated_at": "2026-05-25T22:00:00+09:00",
         "days": [{"date": "2026-05-24", "steps": 1, "distance_km": 1.0,
@@ -1285,12 +1286,36 @@ def test_raw_load_validates_existing_doc():
     with pytest.raises(Exception):
         build_log_json([], existing_doc=poisoned)
 
-def test_final_write_validates_output():
-    """最終 dict を validate する経路が走ること。両段カウント"""
-    valid_existing = {"updated_at": "2026-05-25T22:00:00+09:00", "days": []}
-    rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=1.0)
-    final = build_log_json([rec], existing_doc=valid_existing)
-    assert final["days"][0]["date"] == "2026-05-25"
+def test_final_write_rejects_poisoned_final_dict(mocker):
+    """final write 段: build_log_json が組み立てた dict に余計フィールド注入 → reject
+
+    raw load を bypass するため、validate_log_json を 1 回目だけ通すスタブを使う"""
+    import diet.publish as pub
+    call_count = {"n": 0}
+    real_validate = pub.validate_log_json
+    def staged(doc):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return  # raw load 段はパスさせる
+        return real_validate(doc)  # 2 段目 = final で本物
+    mocker.patch.object(pub, "validate_log_json", side_effect=staged)
+    # build_log_json 内で final dict を組んだ後、外部から後付け汚染できないので、
+    # publish.py 側の merge ロジックに余計キーを差し込んで再現:
+    # ここでは「raw load を validate しなかった経路で final dict に余計キーが入る」場合に
+    # final 段がそれを reject することを確認したい。
+    # build_log_json は raw load を必ず validate するので、上で raw 段を pass さ
+    # せた上で「既存に余計キーがあると DTO 経由でドロップされず final にも残り、final 段で
+    # 落ちる」ことを確認:
+    poisoned_existing = {
+        "updated_at": "2026-05-25T22:00:00+09:00",
+        "days": [{"date": "2026-05-24", "steps": 1, "distance_km": 1.0,
+                  "exercise_kcal": 1, "weight_kg": 1.0, "note": "LEAK"}],
+    }
+    rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0,
+                           exercise_kcal=1, weight_kg=1.0)
+    with pytest.raises(Exception):
+        build_log_json([rec], existing_doc=poisoned_existing)
+    assert call_count["n"] == 2  # 1 回目 raw (pass spoof), 2 回目 final (reject)
 
 def test_validate_called_twice_when_existing(mocker):
     valid_existing = {"updated_at": "2026-05-25T22:00:00+09:00", "days": []}
@@ -1393,22 +1418,36 @@ def test_intake_notes_never_reach_log_json(tmp_path):
     for forbidden_field in ["note", "intake_kcal", "intake", "kcal_intake", "menu"]:
         assert forbidden_field not in serialized
 
-def test_publish_function_does_not_select_intake_events(tmp_path, mocker):
-    """build_records_from_db が intake_events テーブルを SELECT しないこと"""
+def test_publish_function_does_not_select_intake_events(tmp_path):
+    """build_records_from_db が intake_events テーブルを参照しないこと。
+    sqlite3.Connection.execute は C-level read-only 属性なので patch できない。
+    set_trace_callback を使って実際に走った全 SQL をキャプチャする"""
     conn = open_db(tmp_path / "t.db")
     target = date(2026, 5, 25)
     upsert_daily_activity(conn, target, steps=1, distance_km=1.0, logged_activities_kcal=1, marginal_kcal=1)
     upsert_daily_weight(conn, target, 70.0)
-    # connection の execute を spy して "intake_events" を含む SQL が一切走らないこと
-    original_execute = conn.execute
     captured_sql = []
-    def spy_execute(sql, *args, **kw):
-        captured_sql.append(sql)
-        return original_execute(sql, *args, **kw)
-    mocker.patch.object(conn, "execute", side_effect=spy_execute)
+    conn.set_trace_callback(captured_sql.append)
     build_records_from_db(conn, target_dates=[target], exercise_calorie_source="marginal")
-    intake_sqls = [s for s in captured_sql if "intake_events" in s]
+    conn.set_trace_callback(None)
+    intake_sqls = [s for s in captured_sql if "intake_events" in s.lower()]
     assert intake_sqls == [], f"publish path touched intake_events: {intake_sqls}"
+
+def test_publish_function_only_selects_allowed_tables(tmp_path):
+    """publish 関数が触ってよいテーブルは daily_activity と daily_weight のみ。
+    JOIN intake_events のような巧妙な漏洩経路も検出"""
+    conn = open_db(tmp_path / "t.db")
+    target = date(2026, 5, 25)
+    upsert_daily_activity(conn, target, 1, 1.0, 1, 1)
+    upsert_daily_weight(conn, target, 70.0)
+    captured = []
+    conn.set_trace_callback(captured.append)
+    build_records_from_db(conn, target_dates=[target], exercise_calorie_source="marginal")
+    conn.set_trace_callback(None)
+    forbidden_tables = ["intake_events", "config", "fitbit_token"]
+    for sql in captured:
+        for t in forbidden_tables:
+            assert t not in sql.lower(), f"publish touched forbidden table {t}: {sql}"
 ```
 
 - [ ] **Step 2-3: Implement `build_records_from_db()` in publish.py**
@@ -1538,8 +1577,8 @@ def test_init_writes_config_and_runs_oauth_and_sync(tmp_path, monkeypatch, mocke
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
     monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
-    mocker.patch("diet.oauth.run_init_flow", return_value=None)
-    mocker.patch("diet.cli._run_initial_sync", return_value=None)
+    oauth_spy = mocker.patch("diet.oauth.run_init_flow", return_value=None)
+    sync_spy = mocker.patch("diet.cli._run_initial_sync", return_value=None)
     runner = CliRunner()
     inputs = "1979-12-01\n169\nmale\n\nC:/code/HPasaneel\ncontent/diet\n2000\n"
     result = runner.invoke(app, ["init"], input=inputs)
@@ -1550,6 +1589,11 @@ def test_init_writes_config_and_runs_oauth_and_sync(tmp_path, monkeypatch, mocke
     cfg = load_config(open_db(db))
     assert cfg.height_cm == 169
     assert cfg.bootstrap_daily_kcal == 2000
+    oauth_spy.assert_called_once()
+    sync_spy.assert_called_once()
+    # 過去 30 日 sync を呼ぶこと (spec § 8.3)
+    args, kwargs = sync_spy.call_args
+    assert kwargs.get("days") == 30 or (len(args) >= 2 and args[1] == 30)
 
 def test_init_baseline_skip_with_enter(tmp_path, monkeypatch, mocker):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
@@ -1749,7 +1793,50 @@ def test_calibrate_decide_later_keeps_source_none(tmp_path, monkeypatch):
     assert cfg.exercise_calorie_source is None
 ```
 
-- [ ] **Step 2-3: Implement** in `src/diet/calibrate.py`、cli.py から呼ぶ。表示は `Click.echo` でテーブル風（dict 順、整列）。choice は click.Choice(["logged_activities", "marginal", "decide_later"])。
+- [ ] **Step 2-3: Implement**
+
+`src/diet/calibrate.py`:
+```python
+from datetime import date, timedelta
+import click
+from dataclasses import replace
+from diet.db import open_db, load_config, save_config, get_daily_activity
+
+def run_calibrate(data_dir, days: int = 14) -> None:
+    conn = open_db(data_dir / "diet.db")
+    cfg = load_config(conn)
+    today = date.today()
+    click.echo(f"過去 {days} 日の Fitbit カロリー候補:")
+    click.echo(f"{'date':<12} {'steps':>8} {'distance_km':>12} {'logged_activities':>18} {'marginal':>10}")
+    for offset in range(days):
+        d = today - timedelta(days=offset)
+        a = get_daily_activity(conn, d)
+        if a is None:
+            continue
+        click.echo(f"{d.isoformat():<12} {a.steps:>8,} {a.distance_km:>12.1f} "
+                   f"{(a.logged_activities_kcal or 0):>18,} {(a.marginal_kcal or 0):>10,}")
+    click.echo("\n候補の意味:")
+    click.echo("  logged_activities: 明示的に記録された運動エントリの合計")
+    click.echo("  marginal:          Fitbit が活動由来と推定した分（基礎代謝含まず、推奨デフォルト）")
+    choice = click.prompt("採用する exercise_calorie_source",
+                          type=click.Choice(["logged_activities", "marginal", "decide_later"]),
+                          default="marginal")
+    if choice == "decide_later":
+        click.echo("source 未確定、当面 marginal で仮計算します。")
+        return
+    save_config(conn, replace(cfg, exercise_calorie_source=choice))
+    click.echo(f"exercise_calorie_source = {choice} を config に保存しました。")
+```
+
+cli.py に追加:
+```python
+@app.command()
+@click.option("--days", default=14, type=int)
+def calibrate(days: int) -> None:
+    """Show recent Fitbit calorie candidates and select exercise_calorie_source."""
+    from diet.calibrate import run_calibrate
+    run_calibrate(_data_dir(), days=days)
+```
 
 - [ ] **Step 4-5**: Pass, `git commit -m "feat(cli): diet calibrate command"`
 
@@ -1873,7 +1960,50 @@ def test_show_displays_decision_without_input_or_publish(tmp_path, monkeypatch, 
     publish_spy.assert_not_called()
 ```
 
-- [ ] **Step 2-3: Implement** in orchestrator.py の subset として `run_show_only()` を作る
+- [ ] **Step 2-3: Implement**
+
+`src/diet/orchestrator.py` に追加:
+```python
+def run_show_only(data_dir: Path, target_date: _date) -> None:
+    """Display-only mode: no intake prompt, no publish. Reuses the same calculation."""
+    from diet.db import (open_db, load_config, get_events_for_date, get_events_in_range,
+                          get_daily_activity, get_latest_weight_on_or_before)
+    from diet.bmr import age_at, mifflin_st_jeor
+    from diet.intake import past_avg, decide_intake_kcal
+    from diet.formatters import format_intake_display, format_balance
+    from diet.helpers import resolve_exercise_kcal
+    conn = open_db(data_dir / "diet.db")
+    cfg = load_config(conn)
+    activity = get_daily_activity(conn, target_date)
+    weight = get_latest_weight_on_or_before(conn, target_date)
+    history = get_events_in_range(conn, target_date - timedelta(days=14), target_date)
+    avg, n = past_avg(history, target_date)
+    today_events = get_events_for_date(conn, target_date)
+    decision = decide_intake_kcal(today_events, avg, n, cfg.bootstrap_daily_kcal)
+    click.echo(format_intake_display(decision))
+    if weight and activity:
+        age = age_at(cfg.birthday, target_date)
+        bmr = mifflin_st_jeor(weight.weight_kg, cfg.height_cm, age, cfg.sex)
+        exercise = resolve_exercise_kcal(activity, cfg.exercise_calorie_source)
+        click.echo(format_balance(decision.intake_kcal, bmr, exercise,
+                                   activity.steps, activity.distance_km, weight.weight_kg))
+```
+
+cli.py:
+```python
+@app.command()
+@click.option("--date", "date_str", default=None)
+def show(date_str: str | None) -> None:
+    """Display-only mode."""
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+    from diet.orchestrator import run_show_only
+    conn = open_db(_data_dir() / "diet.db")
+    from diet.db import load_config
+    cfg = load_config(conn)
+    target = _date.fromisoformat(date_str) if date_str else datetime.now(ZoneInfo(cfg.timezone)).date()
+    run_show_only(_data_dir(), target)
+```
 
 - [ ] **Step 4-5**: Pass, `git commit -m "feat(cli): diet show display-only mode"`
 
@@ -2107,9 +2237,35 @@ def test_orchestrator_complete_day_no_publish(tmp_path, monkeypatch, mocker):
     assert events[0].op == "override"
 
 def test_orchestrator_skip_intake_uses_avg(tmp_path, monkeypatch, mocker):
-    """Enter で skip、過去 complete day 平均で推定"""
-    # ... 同様にセットアップ、過去 14 日分の complete day を仕込む
-    pass  # 実装時にテストを書き切る
+    """Enter で skip、過去 complete day 平均で推定して表示される"""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import (open_db, Config, save_config, Token, save_token_atomic,
+                          insert_intake_event, upsert_daily_activity, upsert_daily_weight)
+    from datetime import date, datetime, timedelta
+    conn = open_db(tmp_path / "diet.db")
+    target = date(2026, 5, 25)
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo",
+                              str(tmp_path / "fake_hp"), "content/diet", "marginal", 2200))
+    save_token_atomic(conn, Token("A1","R1", datetime(2030,1,1), "UID"))
+    # 過去 14 日 complete day with =2000
+    for i in range(1, 15):
+        d = target - timedelta(days=i)
+        insert_intake_event(conn, d, datetime(d.year, d.month, d.day, 12, 0), 2000, "override")
+    upsert_daily_activity(conn, target, steps=8000, distance_km=5.0,
+                          logged_activities_kcal=250, marginal_kcal=300)
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="")  # 食事 skip
+    mocker.patch("click.confirm", return_value=False)  # publish skip
+    capture = []
+    mocker.patch("click.echo", side_effect=lambda *a, **k: capture.append(" ".join(str(x) for x in a)))
+    from diet.orchestrator import run_daily_flow
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    out = "\n".join(capture)
+    assert "推定" in out and "2,000" in out
+    assert "N=14" in out or "N = 14" in out
 ```
 
 - [ ] **Step 2-3: Implement** in `src/diet/orchestrator.py`:
@@ -2154,9 +2310,8 @@ def run_daily_flow(data_dir: Path, target_date: _date | None = None) -> None:
 
     # [2] 食事入力
     cur_events = get_events_for_date(conn, today)
-    cur_sum = sum(e.kcal for e in cur_events if e.op == "append") + (
-        next((e.kcal for e in reversed(cur_events) if e.op == "override"), 0)
-    )
+    from diet.intake import recorded_sum as _recorded_sum
+    cur_sum = _recorded_sum(cur_events) or 0  # ★ op semantics に従って計算（自前で再実装しない）
     user_in = click.prompt(f"[2/5 食事入力] 累積 {cur_sum} kcal、入力 (+追加 / =上書き / Enter=skip)",
                             default="", show_default=False)
     _handle_intake_input(conn, today, user_in.strip())
@@ -2418,111 +2573,313 @@ git commit -m "feat(diet): add Diet link to main navigation"
 
 # Phase 9: エッジケース統合テスト (§11)
 
-## Task 9.1: tests/test_edgecases.py — Fitbit sync 失敗オフライン耐性
+## Task 9.1: Fitbit sync 失敗オフライン耐性
 
 **Files:** Create `tests/test_edgecases.py`
 
-- [ ] **Step 1: Test**
+- [ ] **Step 1-5: TDD**
 
 ```python
 def test_orchestrator_continues_when_sync_fails(tmp_path, monkeypatch, mocker):
-    """Fitbit sync が例外でも食事入力には進む"""
-    # setup minimal config + token + history
-    # mocker.patch("diet.cli_helpers.run_sync_async", side_effect=Exception("network"))
-    # mocker.patch("click.prompt", return_value="")
-    # mocker.patch("click.confirm", return_value=False)
-    # run_daily_flow を呼ぶ → 例外を吸収して終了 0
-    pass
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import open_db, Config, save_config, Token, save_token_atomic, upsert_daily_weight, get_events_for_date, insert_intake_event
+    from datetime import date, datetime
+    conn = open_db(tmp_path / "diet.db")
+    target = date(2026, 5, 25)
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo", str(tmp_path / "hp"), "content/diet", "marginal", 2000))
+    save_token_atomic(conn, Token("A","R", datetime(2030,1,1), "UID"))
+    upsert_daily_weight(conn, target, 71.2)
+    mocker.patch("diet.cli_helpers.run_sync_async", side_effect=Exception("network down"))
+    mocker.patch("click.prompt", return_value="=2300")
+    mocker.patch("click.confirm", return_value=False)
+    from diet.orchestrator import run_daily_flow
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    # sync 失敗でも食事は記録された
+    events = get_events_for_date(conn, target)
+    assert len(events) == 1
+    assert events[0].kcal == 2300
 ```
-
-- [ ] **Step 2-5: TDD**
 
 `git commit -m "test(edgecase): sync failure tolerance"`
 
 ---
 
-## Task 9.2: tests/test_edgecases.py — 体重 fallback (N 日前を使う + 警告)
+## Task 9.2: 体重 fallback (N 日前を使う + 警告)
 
-- [ ] **Step 1-5: TDD** (target_date より前の最新体重を使う、N=2 日前と表示)
+- [ ] **Step 1-5: TDD**
 
-`git commit -m "test(edgecase): weight fallback to last on-or-before"`
+```python
+def test_weight_fallback_displays_days_ago(tmp_path, monkeypatch, mocker, capsys):
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import open_db, Config, save_config, Token, save_token_atomic, upsert_daily_activity, upsert_daily_weight
+    from datetime import date, datetime, timedelta
+    conn = open_db(tmp_path / "diet.db")
+    target = date(2026, 5, 25)
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo", None, "content/diet", "marginal", 2000))
+    save_token_atomic(conn, Token("A","R", datetime(2030,1,1), "UID"))
+    upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
+    # 体重は 3 日前のみ
+    upsert_daily_weight(conn, target - timedelta(days=3), 71.5)
+    mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
+    mocker.patch("click.prompt", return_value="=2000")
+    mocker.patch("click.confirm", return_value=False)
+    from diet.orchestrator import run_daily_flow
+    run_daily_flow(data_dir=tmp_path, target_date=target)
+    captured = capsys.readouterr()
+    assert "71.5" in captured.out
+    assert "2026-05-22" in captured.out  # 計測日表示
+```
+
+`git commit -m "test(edgecase): weight fallback to last on-or-before with date display"`
 
 ---
 
-## Task 9.3: tests/test_edgecases.py — diet not initialized error
+## Task 9.3: diet not initialized guard
 
-- [ ] **Step 1-5: TDD** (`diet` を実行、cfg=None → "Run diet init first" で exit 非 0)
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_diet_command_requires_init(tmp_path, monkeypatch):
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    runner = CliRunner()
+    result = runner.invoke(app, [])
+    assert result.exit_code != 0
+    assert "init" in result.output.lower()
+```
 
 `git commit -m "test(edgecase): diet init required guard"`
 
 ---
 
-## Task 9.4: tests/test_edgecases.py — 同日複数回 publish (rev N suffix)
+## Task 9.4: 同日複数回 publish (rev N suffix)
 
-- [ ] **Step 1-5: TDD** (2 回目以降の commit message が `diet: 2026-05-25 update (rev 2)` 等になる)
-
-修正必要箇所: `publish_to_hpasaneel` で対象日の log.json 既存 entry の有無で rev カウントを増やす。
-
-`git commit -m "feat(publish): rev N suffix on same-day re-publish"`
-
----
-
-## Task 9.5: tests/test_edgecases.py — 429 rate limit エラー
-
-- [ ] **Step 1-5: TDD** (429 受領時、rate_limit.reset_seconds がヘッダ値を反映、call 側で例外として上に伝わる)
-
-`git commit -m "test(edgecase): 429 rate limit reset propagation"`
-
----
-
-## Task 9.6: tests/test_edgecases.py — process lock for refresh
-
-- [ ] **Step 1: Test**
-
-```python
-def test_concurrent_token_refresh_serialized(tmp_path):
-    """並列に 2 つの diet プロセスが起きても refresh は順次実行"""
-    # 簡易版: BEGIN IMMEDIATE が他のトランザクションをブロックすることを確認
-    import threading, time
-    from diet.db import open_db, save_token_atomic, Token
-    from datetime import datetime
-    db_path = tmp_path / "t.db"
-    open_db(db_path).close()  # init
-    barrier = threading.Barrier(2)
-    started = []
-    finished = []
-    def worker(name, tok):
-        conn = open_db(db_path)
-        barrier.wait()
-        started.append(name)
-        save_token_atomic(conn, tok)
-        finished.append(name)
-    t1 = threading.Thread(target=worker, args=("a", Token("A","R", datetime(2030,1,1), "U")))
-    t2 = threading.Thread(target=worker, args=("b", Token("B","R", datetime(2030,1,1), "U")))
-    t1.start(); t2.start(); t1.join(); t2.join()
-    assert len(finished) == 2  # 両方完了、race 条件なし
-```
-
-- [ ] **Step 2-5: 実装は Task 2.4 で済んでる。テスト追加のみで pass を確認**
-
-`git commit -m "test(edgecase): concurrent token refresh serialized via BEGIN IMMEDIATE"`
-
----
-
-## Task 9.7: tests/test_edgecases.py — cold start (記録なし + baseline なし)
+**Files:** Modify `src/diet/publish.py`, Modify tests/test_publish_git.py
 
 - [ ] **Step 1-5: TDD**
 
 ```python
-def test_cold_start_no_baseline_returns_unconfirmed():
-    """過去 14 日に complete day 0 件 + baseline 未設定 → unconfirmed"""
+def test_same_day_republish_rev_n_suffix(tmp_path):
+    import subprocess
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0)
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    rec2 = PublicDayRecord(date=date(2026, 5, 25), steps=2, distance_km=2.0, exercise_kcal=2, weight_kg=70.0)
+    publish_to_hpasaneel(repo, "content/diet", [rec2], do_push=False)
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo, check=True, capture_output=True, text=True)
+    lines = log.stdout.splitlines()
+    # 最新 commit (1 行目) が "rev 2" 等を含む
+    assert any("rev 2" in l for l in lines[:2]) or any("(rev" in l for l in lines[:2])
+```
+
+実装方針: `publish_to_hpasaneel` が `git log --grep "diet: 2026-05-25"` で過去同日の commit 数を数えて N+1 を rev に。
+
+`git commit -m "feat(publish): rev N suffix for same-day re-publishes"`
+
+---
+
+## Task 9.5: 429 rate limit
+
+- [ ] **Step 1-5: TDD** (Task 4.3 で実装済み。エッジテストとして再確認)
+
+```python
+async def test_429_reset_seconds_in_state(httpx_mock):
+    from diet.fitbit_client import FitbitClient
+    import pytest, httpx
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json",
+        status_code=429, headers={"Fitbit-Rate-Limit-Reset": "600"}, json={},
+    )
+    client = FitbitClient(access_token="A")
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_activity_summary("2026-05-25")
+    assert client.rate_limit.reset_seconds == 600
+```
+
+`git commit -m "test(edgecase): 429 reset_seconds propagation"`
+
+---
+
+## Task 9.6: 並列 token refresh (process lock proof)
+
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_concurrent_token_writes_dont_corrupt(tmp_path):
+    """並列 2 スレッドで save_token_atomic を 10 回ずつ呼ぶ → 最終状態が壊れない"""
+    import threading
+    from diet.db import open_db, save_token_atomic, load_token, Token
+    from datetime import datetime
+    db_path = tmp_path / "t.db"
+    open_db(db_path).close()
+    errors = []
+    def worker(prefix):
+        try:
+            conn = open_db(db_path)
+            for i in range(10):
+                save_token_atomic(conn, Token(f"{prefix}{i}", f"R{prefix}{i}", datetime(2030,1,1), "U"))
+        except Exception as e:
+            errors.append(e)
+    t1 = threading.Thread(target=worker, args=("a",))
+    t2 = threading.Thread(target=worker, args=("b",))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert errors == [], f"concurrent writes corrupted: {errors}"
+    # 最終状態は単一行
+    conn = open_db(db_path)
+    n = conn.execute("SELECT COUNT(*) FROM fitbit_token").fetchone()[0]
+    assert n == 1
+    tok = load_token(conn)
+    assert tok.access_token.startswith(("a", "b"))
+```
+
+`git commit -m "test(edgecase): concurrent token rotation safety"`
+
+---
+
+## Task 9.7: cold start (記録なし + baseline なし)
+
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_cold_start_unconfirmed():
+    from datetime import date
+    from diet.intake import past_avg, decide_intake_kcal
     avg, n = past_avg({}, target_date=date(2026, 5, 25))
     d = decide_intake_kcal([], avg, n, bootstrap_baseline=None)
     assert d.label == "unconfirmed"
     assert d.intake_kcal is None
 ```
 
-`git commit -m "test(edgecase): cold-start path returns unconfirmed"`
+`git commit -m "test(edgecase): cold-start unconfirmed path"`
+
+---
+
+## Task 9.8: dirty HPasaneel repo (他に未コミット変更あり)
+
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_publish_with_other_uncommitted_changes(tmp_path):
+    """log.json 以外に未コミット変更がある時、log.json だけ commit する（巻き込まない）"""
+    import subprocess
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    # 別ファイルを変更
+    (repo / "README.md").write_text("# changed by user")
+    rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0)
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    # README.md は未コミット のまま
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True)
+    assert " M README.md" in status.stdout or "M  README.md" not in status.stdout  # 未 stage
+    # log.json の commit が走った
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo, check=True, capture_output=True, text=True)
+    assert "diet: 2026-05-25" in log.stdout
+```
+
+`git commit -m "test(edgecase): publish does not pull in unrelated dirty files"`
+
+---
+
+## Task 9.9: git push failure (rebase 不可) → ユーザーに手動解決を促す
+
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_publish_propagates_push_failure(tmp_path, mocker):
+    """git push が exit 非 0 で失敗したら、CalledProcessError を伝播し orchestrator 側で処理"""
+    import subprocess
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    rec = PublicDayRecord(date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0)
+    # subprocess.run の "git push" だけ失敗させる
+    orig = subprocess.run
+    def fake(args, **kw):
+        if isinstance(args, list) and args[:2] == ["git", "push"]:
+            raise subprocess.CalledProcessError(1, args, output=b"", stderr=b"non-fast-forward")
+        return orig(args, **kw)
+    mocker.patch("subprocess.run", side_effect=fake)
+    import pytest
+    with pytest.raises(subprocess.CalledProcessError):
+        publish_to_hpasaneel(repo, "content/diet", [rec], do_push=True)
+```
+
+`git commit -m "test(edgecase): push failure propagates for manual resolution"`
+
+---
+
+## Task 9.10: cert expiry / --regen-cert
+
+- [ ] **Step 1-5: TDD**
+
+```python
+def test_regen_cert_recreates_files(tmp_path):
+    from diet.oauth import generate_self_signed_cert
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    generate_self_signed_cert(cert, key, "localhost", 1)  # 1 日のみ
+    original = cert.read_bytes()
+    # 再生成 (no-op since exists)
+    generate_self_signed_cert(cert, key, "localhost", 3650)
+    assert cert.read_bytes() == original
+    # cli で --regen-cert オプション付きで auth → 削除して再生成
+    cert.unlink()
+    key.unlink()
+    generate_self_signed_cert(cert, key, "localhost", 3650)
+    assert cert.exists() and key.exists()
+    assert cert.read_bytes() != original
+```
+
+`git commit -m "test(edgecase): cert regen produces new files"`
+
+---
+
+## Task 9.11: crash recovery (token rotation 中の crash → diet auth 案内)
+
+- [ ] **Step 1-5: TDD**
+
+```python
+async def test_refresh_failure_with_revoked_token_propagates(httpx_mock):
+    """refresh エンドポイントが 400 (invalid_grant) を返す → 例外を上層で捕捉して
+    diet auth 案内するハンドラを CLI に持つ"""
+    from diet.oauth import refresh_access_token
+    import httpx
+    import pytest
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token", method="POST",
+        status_code=400, json={"errors": [{"errorType": "invalid_grant"}]},
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await refresh_access_token("CID", "CSEC", "REVOKED_REFRESH")
+
+def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mocker):
+    """sync 中に refresh が失敗 → "diet auth" を案内するメッセージで exit 非 0"""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import open_db, Config, save_config, Token, save_token_atomic
+    from datetime import date, datetime
+    conn = open_db(tmp_path / "diet.db")
+    save_config(conn, Config(date(1979,12,1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None))
+    save_token_atomic(conn, Token("A","R_REVOKED", datetime(2030,1,1), "UID"))
+    import httpx
+    mocker.patch("diet.cli_helpers.run_sync_async",
+                 side_effect=httpx.HTTPStatusError("refresh failed", request=mocker.MagicMock(), response=mocker.MagicMock()))
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync"])
+    assert result.exit_code != 0
+    assert "diet auth" in result.output
+```
+
+実装側: cli.py の sync ハンドラで refresh 例外を catch、`click.echo` で `"refresh token が無効になりました。`diet auth` で再認証してください"` を出し、exit non-zero。
+
+`git commit -m "feat(cli)+test(edgecase): refresh failure directs user to diet auth"`
 
 ---
 
@@ -2614,4 +2971,4 @@ After this plan is reviewed by codex:
 Per user global rule: subagent-driven (option 1) is default. After plan approval:
 - Use `superpowers:subagent-driven-development` skill
 - Fresh subagent per task, two-stage review between tasks
-- ~40 tasks total
+- ~45 tasks total (Phase 0..10)
