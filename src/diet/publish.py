@@ -11,8 +11,11 @@ Two layers of allowlist defence:
 
 Never import this module from any layer that reads `intake_events`.
 """
+import json
+import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import jsonschema
 
@@ -137,6 +140,51 @@ def build_log_json(
     final = _assemble_final_dict(records, existing_doc)
     validate_log_json(final)  # stage 2: final write
     return final
+
+
+def publish_to_hpasaneel(
+    repo_path: Path,
+    diet_root: str,
+    records: list[PublicDayRecord],
+    do_push: bool,
+) -> None:
+    """Write log.json into the HPasaneel repo and commit (optionally push).
+
+    Sequence (spec §7 git 連携):
+      1. (do_push only) ``git pull --rebase`` to take remote changes
+      2. read existing log.json from disk (post-pull view)
+      3. build new log.json (with 2-stage schema validate)
+      4. write log.json atomically
+      5. ``git add`` log.json ONLY — never `git add .`
+      6. ``git commit -m "diet: <dates> update"``
+      7. (do_push only) ``git push``
+    """
+    log_path = repo_path / diet_root / "log.json"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if do_push:
+        subprocess.run(["git", "pull", "--rebase"], cwd=repo_path, check=True)
+
+    existing: dict | None = None
+    if log_path.exists():
+        existing = json.loads(log_path.read_text(encoding="utf-8"))
+
+    final = build_log_json(records, existing)
+    log_path.write_text(
+        json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # Stage log.json ONLY (relative path, forward slashes for git on Windows).
+    rel = str(log_path.relative_to(repo_path)).replace("\\", "/")
+    subprocess.run(["git", "add", rel], cwd=repo_path, check=True)
+    dates = ", ".join(r.date.isoformat() for r in records)
+    subprocess.run(
+        ["git", "commit", "-m", f"diet: {dates} update"],
+        cwd=repo_path,
+        check=True,
+    )
+    if do_push:
+        subprocess.run(["git", "push"], cwd=repo_path, check=True)
 
 
 @dataclass(frozen=True)
