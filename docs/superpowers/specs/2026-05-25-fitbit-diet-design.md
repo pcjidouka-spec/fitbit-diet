@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（プライバシー方針明確化, rev 5）
+- 最終更新: 2026-05-25（食事 kcal の平均補完ロジック追加, rev 6）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -13,7 +13,7 @@
 
 「食べた分だけ歩く・走る」をパーソナル運用するための CLI ツールを作る。
 
-- **食事カロリー（kcal 数値）**: CLI で手入力。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
+- **食事カロリー（kcal 数値）**: CLI で手入力（全食事を必ずしも記録しない前提）。記録されない時は **過去 14 日の記録あり日の平均**で補完。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
 - **食事メニュー（note 文字列）**: ★最重要秘匿対象★ 絶対に公開しない
 - **運動データ・体重**: Fitbit Web API 経由で取得、HPasaneel に公開
 - **基礎代謝（BMR）**: 生年月日・身長・性別と当日体重から自動算出
@@ -104,6 +104,55 @@ Fitbit デバイスは 24 時間装着しない前提のため、Fitbit が出�
 
 ---
 
+## 4.5 食事 kcal の解釈ロジック（rev 6 追加）
+
+ユーザーは毎食必ず記録するとは限らないので、`intake_events` から **対象日の摂取 kcal（intake_kcal）** を以下のアルゴリズムで算出する。これはランタイム計算で、テーブルには保存しない。
+
+### 用語
+
+- **today_events**: 対象日 (Asia/Tokyo) の `intake_events` レコード（時系列順）
+- **recorded_sum**: 対象日の event 群から算出した「ユーザーが明示的に記録した今日のカロリー合計」
+- **past_avg**: 対象日より前 14 日間で `intake_events` に 1 件以上記録のある日（記録あり日）の `recorded_sum` 平均
+
+### recorded_sum の算出（op セマンティクス）
+
+- 対象日 events が空 → `recorded_sum = None`（記録なし）
+- 最後の `op='override'` 以降の events を採用:
+  - `override.kcal` を基底値、その後の `+append.kcal` をすべて加算
+- override が一度も無く append のみ → 全 append の合計
+- 例:
+  - `[+500, +300]` → 800
+  - `[+500, =2000, +200]` → 2200
+  - `[=2000]` → 2000
+
+### past_avg の算出
+
+```sql
+SELECT date, <recorded_sum 算出と同じロジック> AS sum
+FROM intake_events
+WHERE date BETWEEN target_date - 14 days AND target_date - 1 day
+GROUP BY date
+```
+の各日 `sum` の単純平均。記録あり日が 0 件なら `past_avg = None`。
+
+### 最終 intake_kcal の決定
+
+| recorded_sum | past_avg | intake_kcal | 表示 |
+|---|---|---|---|
+| `None` | `None` | `None`（収支算出不可）| 「記録なし、過去データ不足のため摂取量未確定」 |
+| `None` | あり | `past_avg` | 「推定 X kcal (過去 14 日平均)」|
+| あり | `None` | `recorded_sum` | 「記録 X kcal (過去データ不足のため平均補完なし)」|
+| あり | あり | `max(recorded_sum, past_avg)` | recorded ≥ avg なら「記録 X kcal」、recorded < avg なら「推定 X kcal (記録 Y + 平均補完 Z)」|
+
+### 設計判断
+
+- **「多い方」採用** の理由: 部分入力日（`+500` だけ打って終わり）が実際の摂取より小さく評価されるのを防ぐ。逆に「記録した値が平均を超える日」は実測の方が信頼できるのでそのまま使う
+- **「記録あり日」のみ平均** の理由: 「記録しなかった = 何も食べなかった」ではないので、ゼロを混ぜると平均を不当に下げる
+- **平均はランタイム計算** → 過去日修正・新規追加で過去平均値が遡って更新される。テーブルにキャッシュしない
+- **`intake_kcal = None` の時** → § 5 [4] 収支表示は「摂取量未確定のため収支算出不可、明日以降の calibration 待ち」と表示し、publish は通常通り（運動・体重のみ）実行する
+
+---
+
 ## 5. アーキテクチャ（B 案: 単一コマンド対話型）
 
 `diet` 1 コマンドで 1 日分が完結する対話フロー:
@@ -118,12 +167,22 @@ $ diet
 [2/5 食事入力] 今日のカロリー (現在の累積: 1,800kcal)
     入力 (+追加 / =上書き / Enter=skip):
     > +500
-    累積 2,300kcal
+    累積 2,300kcal (記録)
+
+  ※ Enter で skip した時の表示例:
+    入力 (+追加 / =上書き / Enter=skip):
+    >
+    推定 2,100kcal (過去 14 日平均、記録あり日 11 日から算出)
+
+  ※ 部分入力で平均より少なかった日:
+    > +500
+    推定 2,100kcal (記録 500 + 平均補完 1,600)
 
 [3/5 基礎代謝] BMR (46歳/男性/169cm/71.2kg) = 1,543kcal
 
 [4/5 収支] 摂取 2,300 vs 消費 (BMR 1,543 + 運動 280) = -477kcal (赤字)
     黒字化まで あと約 11,900歩 (または 走 3.4km)
+    ※ 摂取が「推定」表示の時は収支も「推定」とラベル表示
 
 [5/5 公開] HPasaneel に運動・体重のみ公開しますか? [y/N]: y
     → content/diet/log.json 更新 (2026-05-25 entry)
@@ -391,6 +450,7 @@ C:/code/fitbit連動ダイエット/
       fitbit_client.py   # Fitbit Web API ラッパー + rate limit tracking
       oauth.py           # OAuth フロー + localhost callback server + atomic token rotation
       bmr.py             # BMR 計算（純粋関数、target_date 引数で過去日対応）
+      intake.py          # 食事 kcal 算出（recorded_sum / past_avg / final intake_kcal の純粋関数）
       db.py              # SQLite 接続・スキーマ管理
       publish.py         # log.json 生成 + git 操作（公開境界、DTO + JSON schema 2層）
       calibrate.py       # calibration コマンド
@@ -477,6 +537,12 @@ C:/code/HPasaneel/
 
 ## 12. テスト方針
 
+- **`intake.py`** — 食事 kcal 算出（純粋関数、テスト容易）:
+  - `recorded_sum` の op セマンティクス: append のみ・override 後 append・複数 override の最後採用、を網羅
+  - `past_avg`: 記録あり日 0 件で `None` を返す、14 日窓の端日（target_date - 14 含む or 含まない？仕様明示）
+  - `intake_kcal` の 4 ケース分岐表すべてをテスト
+  - max(recorded, avg) の境界（recorded == avg、recorded > avg、recorded < avg）
+  - 部分入力後の表示文字列が「記録 Y + 平均補完 Z」フォーマットになること
 - **`bmr.py`** — 純粋関数なので網羅的ユニットテスト
   - 過去日入力時の年齢計算（生年月日跨ぎを含む）
   - Asia/Tokyo と UTC の境界日テスト
@@ -540,6 +606,15 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 6 (2026-05-25) — intake kcal 平均補完
+| 変更内容 | 反映場所 |
+|---|---|
+| 「全食事は記録しない」前提を § 1 に明記 | § 1 食事カロリー行 |
+| `intake_kcal` の算出ロジックを新セクションで詳述（recorded_sum + past_avg + max 採用）| § 4.5 新設、op セマンティクス・4 ケース分岐表 |
+| 対話フロー [2] の表示パターンを 3 種類（記録 / 推定 / 部分入力）に拡張 | § 5 対話フロー |
+| エッジケース行 2 件追加（スキップ時推定、運用初期データ不足）| § 11 |
+| `intake.py` モジュールを新規追加（純粋関数）| § 9 構成、§ 12 テスト |
 
 ### rev 5 (2026-05-25) — privacy policy clarification
 | 変更内容 | 反映場所 |
