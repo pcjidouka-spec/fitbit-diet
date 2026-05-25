@@ -207,3 +207,24 @@ def test_case7_empty_no_avg_no_baseline():
     d = decide_intake_kcal([], past_avg_val=None, n_samples=0, bootstrap_baseline=None)
     assert d.intake_kcal is None
     assert d.label == "unconfirmed"
+
+
+def test_decide_treats_avg_as_unavailable_below_floor():
+    """Spec §4.5: past_avg available = (not None) AND (N >= SAMPLE_FLOOR).
+    Even if a numeric average is passed in, below floor it must NOT be used."""
+    # today empty, past_avg_val=2000 but n_samples=2 (below floor=3), baseline=2000
+    # Should fall through to estimated_baseline (Row 6), NOT estimated_avg (Row 5)
+    d = decide_intake_kcal([], past_avg_val=2000.0, n_samples=2, bootstrap_baseline=2000)
+    assert d.intake_kcal == 2000
+    assert d.label == "estimated_baseline"  # not "estimated_avg"
+
+
+def test_decide_partial_avg_below_floor_uses_baseline():
+    """Partial today + numeric avg but below floor + baseline → estimated_baseline_supplement"""
+    d = decide_intake_kcal(
+        [E(500, "append")],
+        past_avg_val=2000.0, n_samples=2,
+        bootstrap_baseline=2200,
+    )
+    assert d.intake_kcal == 2200
+    assert d.label == "estimated_baseline_supplement"

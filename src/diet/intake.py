@@ -72,7 +72,7 @@ def decide_intake_kcal(
 ) -> IntakeDecision:
     rec = recorded_sum(today_events)
     is_complete = is_complete_day(today_events)
-    has_avg = past_avg_val is not None
+    has_avg = past_avg_val is not None and n_samples >= SAMPLE_FLOOR
     has_baseline = bootstrap_baseline is not None
 
     if is_complete:
