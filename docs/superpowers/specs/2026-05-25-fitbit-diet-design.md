@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（override authoritative / sample floor / bootstrap baseline, rev 7）
+- 最終更新: 2026-05-25（editorial cleanup, rev 8 = final）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -13,7 +13,7 @@
 
 「食べた分だけ歩く・走る」をパーソナル運用するための CLI ツールを作る。
 
-- **食事カロリー（kcal 数値）**: CLI で手入力（全食事を必ずしも記録しない前提）。記録されない時は **過去 14 日の記録あり日の平均**で補完。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
+- **食事カロリー（kcal 数値）**: CLI で手入力（全食事を必ずしも記録しない前提）。記録されない時は **過去 14 日の complete day 平均**（§ 4.5）で補完。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
 - **食事メニュー（note 文字列）**: ★最重要秘匿対象★ 絶対に公開しない
 - **運動データ・体重**: Fitbit Web API 経由で取得、HPasaneel に公開
 - **基礎代謝（BMR）**: 生年月日・身長・性別と当日体重から自動算出
@@ -161,20 +161,24 @@ WHERE has_override = 1   -- ★ complete day のみ
 
 - **日付窓は JST 日付で `[target_date - 14, target_date)` の半開区間**（target_date - 14 を含み、target_date を含まない）
 - **complete day が 0 件 → past_avg = None, N_samples = 0**
-- 確定した N_samples は 4 ケース分岐の判断と表示に使う
+- **`N_samples < SAMPLE_FLOOR` の時は、たとえ numeric な average 値が算出できても past_avg は "unavailable" 扱い** とする（決定表の判定では `past_avg なし` 行に流れる）
+- 確定した N_samples は 6 ケース分岐の判断と表示に使う
 
 ### 最終 intake_kcal の決定（rev 7 完全書き直し）
 
 優先順位を上から評価:
 
-| 条件 | intake_kcal | label | 表示例 |
-|---|---|---|---|
-| today に **override が 1 件以上** (complete day) | `recorded_sum` | `recorded_authoritative` | 「記録 1800 kcal」 |
-| today は partial で `recorded_sum is not None` & `past_avg` あり (N_samples ≥ SAMPLE_FLOOR) | `max(recorded_sum, past_avg)` | recorded ≥ avg → `recorded_partial_high`、recorded < avg → `estimated_avg_supplement` | 前者「記録 2400 kcal (部分入力)」、後者「推定 2100 kcal (記録 500 + 平均補完 1600、N=11)」|
-| today は partial で `recorded_sum is not None` & avg なし or N_samples < SAMPLE_FLOOR | `max(recorded_sum, bootstrap_baseline)` if baseline あり、else `recorded_sum` | `estimated_baseline_supplement` / `recorded_no_baseline` | 「推定 2000 kcal (記録 500 + baseline 補完 1500)」 |
-| today empty & past_avg あり (N_samples ≥ SAMPLE_FLOOR) | `past_avg` | `estimated_avg` | 「推定 1980 kcal (過去 14 日 complete day 平均, N=8)」 |
-| today empty & avg なし or N_samples < floor & baseline あり | `bootstrap_baseline` | `estimated_baseline` | 「推定 2000 kcal (init baseline)」 |
-| today empty & avg なし & baseline なし | `None` | `unconfirmed` | 「摂取量未確定 (記録なし、complete day が N 件しかない、baseline 未設定)」 |
+**注**: 以下の条件中、`past_avg available` = `(past_avg is not None) AND (N_samples ≥ SAMPLE_FLOOR)`。numeric な average が出ても floor 未達なら unavailable 扱い（boolean 短絡）。
+
+| # | 条件（上から順に評価、最初にマッチした行を採用）| intake_kcal | label | 表示例 |
+|---|---|---|---|---|
+| 1 | today に **override が 1 件以上** (complete day) | `recorded_sum` | `recorded_authoritative` | 「記録 1800 kcal」 |
+| 2 | (today は partial) AND (`recorded_sum is not None`) AND (`past_avg available`) | `max(recorded_sum, past_avg)` | recorded ≥ avg → `recorded_partial_high`、recorded < avg → `estimated_avg_supplement` | 前者「記録 2400 kcal (部分入力)」、後者「推定 2100 kcal (記録 500 + 平均補完 1600、N=11)」|
+| 3 | (today は partial) AND (`recorded_sum is not None`) AND (NOT `past_avg available`) AND (`baseline is not None`) | `max(recorded_sum, bootstrap_baseline)` | `estimated_baseline_supplement` | 「推定 2000 kcal (記録 500 + baseline 補完 1500)」 |
+| 4 | (today は partial) AND (`recorded_sum is not None`) AND (NOT `past_avg available`) AND (`baseline is None`) | `recorded_sum` | `recorded_no_baseline` | 「記録 500 kcal (cold start、baseline 未設定)」 |
+| 5 | (today empty) AND (`past_avg available`) | `past_avg` | `estimated_avg` | 「推定 1980 kcal (過去 14 日 complete day 平均, N=8)」 |
+| 6 | (today empty) AND (NOT `past_avg available`) AND (`baseline is not None`) | `bootstrap_baseline` | `estimated_baseline` | 「推定 2000 kcal (init baseline)」 |
+| 7 | (today empty) AND (NOT `past_avg available`) AND (`baseline is None`) | `None` | `unconfirmed` | 「摂取量未確定 (記録なし、complete day が N 件しかない、baseline 未設定)」 |
 
 ### 設計判断
 
@@ -665,6 +669,14 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 8 (2026-05-25) — editorial cleanup
+| 変更内容 | 反映場所 |
+|---|---|
+| §1 「過去 14 日の記録あり日の平均」を「complete day 平均」に統一 | § 1 |
+| 「4 ケース分岐」古い表記 → 「6 ケース分岐」（実態は 7 行） | § 4.5 |
+| 決定表の条件に明示的な括弧（AND / OR / NOT）と評価順序を明記、行番号化 | § 4.5 決定表 |
+| `past_avg available` の boolean 定義を明文化（N_samples<floor は raw numeric average があっても unavailable）| § 4.5 |
 
 ### rev 7 (2026-05-25) — intake fallback 厳密化
 | codex 指摘 | 反映場所 |
