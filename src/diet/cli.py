@@ -83,6 +83,30 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
+@click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
+def show(date_str: str | None) -> None:
+    """Display-only mode (no Fitbit sync, no publish)."""
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+
+    from diet.db import load_config
+    from diet.orchestrator import run_show_only
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    target = (
+        _date.fromisoformat(date_str)
+        if date_str
+        else datetime.now(ZoneInfo(cfg.timezone)).date()
+    )
+    run_show_only(_data_dir(), target)
+
+
+@app.command()
 @click.argument("kcal", type=click.IntRange(min=1))
 def baseline(kcal: int) -> None:
     """Update bootstrap_daily_kcal."""
