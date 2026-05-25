@@ -83,6 +83,31 @@ def _run_initial_sync(conn, days: int) -> None:
 
 
 @app.command()
+@click.argument("kg", type=float)
+@click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
+def weight(kg: float, date_str: str | None) -> None:
+    """Manually record a weight reading."""
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+
+    from diet.db import load_config, upsert_daily_weight
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    target = (
+        _date.fromisoformat(date_str)
+        if date_str
+        else datetime.now(ZoneInfo(cfg.timezone)).date()
+    )
+    upsert_daily_weight(conn, target, kg)
+    click.echo(f"weight {kg}kg recorded for {target}")
+
+
+@app.command()
 @click.option("--days", default=14, type=click.IntRange(min=1))
 def calibrate(days: int) -> None:
     """Show recent Fitbit calorie candidates and select exercise_calorie_source."""
