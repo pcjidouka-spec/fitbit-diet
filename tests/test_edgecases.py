@@ -357,3 +357,59 @@ def test_cold_start_unconfirmed():
     d = decide_intake_kcal([], avg, n, bootstrap_baseline=None)
     assert d.label == "unconfirmed"
     assert d.intake_kcal is None
+
+
+# --- Task 9.8: dirty HPasaneel repo --------------------------------------
+
+
+def test_publish_with_other_uncommitted_changes(tmp_path):
+    """log.json 以外に未コミット変更がある時、log.json だけ commit する.
+
+    Pre-track: README.md is in the initial commit (per ``_init_repo``).
+    Modify it (unstaged) → publish → README.md must remain unstaged and the
+    last commit must contain only ``content/diet/log.json``.
+    """
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    # README.md is tracked. Modify it without staging.
+    (repo / "README.md").write_text("# changed by user after init")
+    pre_status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert " M README.md" in pre_status.stdout, (
+        f"setup: README must be modified but unstaged, got: {pre_status.stdout!r}"
+    )
+
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+
+    # README.md should still be modified-but-unstaged.
+    post_status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert " M README.md" in post_status.stdout, (
+        f"README must remain unstaged, got: {post_status.stdout!r}"
+    )
+
+    # Last commit contains exactly log.json.
+    files_in_last = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().splitlines()
+    assert files_in_last == ["content/diet/log.json"], (
+        f"last commit must contain only log.json, got: {files_in_last}"
+    )
