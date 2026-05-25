@@ -1,7 +1,7 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（codex review 反映, rev 3）
+- 最終更新: 2026-05-25（codex review 反映, rev 4 = final）
 - ステータス: ユーザーレビュー待ち
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
@@ -102,7 +102,7 @@ Fitbit デバイスは 24 時間装着しない前提のため、Fitbit が出�
 $ diet
 [1/5 Fitbit同期] 運動データ取得中...
     歩数 8,234 / 距離 5.3km
-    運動消費 280kcal (source: activities[].calories)
+    運動消費 280kcal (source: marginal)
     体重 71.2kg (Renpho→Fitbit経由、2026-05-25 計測)
 
 [2/5 食事入力] 今日のカロリー (現在の累積: 1,800kcal)
@@ -229,8 +229,14 @@ fitbit_token (
 
 **DTO → JSON 変換契約（実装時の禁則事項）:**
 - `dataclasses.asdict()` / `__dict__` / `row._asdict()` 等の自動シリアライズを **使わない**。手書きの `to_public_dict()` メソッドで 5 フィールドだけを dict に詰める
-- 既存 `log.json` の merge は、読み込んだ既存 entry も同じ DTO で再正規化してから merge する（生 dict のまま merge しない）
-- 書き出し直前の payload を bytes 化する前に、final dict で schema バリデーションを実施
+- 既存 `log.json` の merge 手順は厳密に以下の順:
+  1. 既存ファイルを raw dict として読み込み
+  2. **読み込み直後に schema validate**（未知フィールドが混入してたらここで例外停止、silent drop させない）
+  3. DTO に詰め直して正規化
+  4. 対象日 entry を新データで差し替え or 追加して merge
+  5. **書き出し直前にもう一度 schema validate**（final dict が schema に従ってることを確認）
+  6. ファイル書き出し
+- raw dict と DTO 化 dict の **両方** で schema validate する 2 段構え
 
 **JSON schema 仕様:**
 ```json
@@ -273,10 +279,11 @@ git status --porcelain content/diet/log.json    # log.json に手動変更が無
 git pull --rebase                                # リモートとの差分取り込み
 
 # ★重要: diet は pull 後の log.json をディスクから読み込み直し、
-#       対象日 entry のみを差し替えて再書き出しする。
+#       (1) raw 読み込み直後に schema validate(未知フィールドは silent drop されない)
+#       (2) DTO 化、対象日 entry のみ差し替え、他日 entry は保持
+#       (3) 書き出し直前にもう一度 schema validate
+#       (4) ファイル書き出し
 #       リモートで他端末/別プロセスが追加した「新しい日付の entry」を絶対消さない。
-#       読み込み時も再正規化（DTO 経由）を経るので、未知フィールドが混入した
-#       ファイルは schema validation 段階で停止する。
 
 # stage は log.json のみ限定指定
 git add content/diet/log.json
@@ -474,7 +481,9 @@ C:/code/HPasaneel/
   - 公開フィールドが `date / steps / distance_km / exercise_kcal / weight_kg` の 5 個のみであることを assert
 - **`publish.py`** — DTO 変換契約:
   - `to_public_dict()` が 5 フィールドだけ返すこと、余計なフィールドを混入させても DTO 経由で削られること
-  - 既存 log.json を merge するとき、未知フィールドが含まれてたら schema 段階で例外
+  - 既存 log.json を merge するとき、未知フィールドが含まれてたら **raw 段階の schema validate で**例外（DTO で silent drop されないこと）
+  - 書き出し直前の final dict schema validate でも余計フィールドを reject すること
+  - 2 段 validate が両方走ることをテストで確認（前段だけ走って後段がスキップされない）
 - **`oauth.py`** — token rotation:
   - refresh 成功時の DB 保存が atomic（部分書き込みで壊れない、`BEGIN IMMEDIATE`）
   - rotation 中の crash 後の再起動で正しい復旧パス（`diet auth` 案内）
@@ -518,6 +527,12 @@ C:/code/HPasaneel/
 | Low-1: rate limit カウント・ヘッダ尊重 | § 9 fitbit_client.py 役割、§ 11 rate limit 行 |
 | Low-2: git push の安全シーケンス | § 7 git 連携セクション全面書き直し |
 | Scope: calibration コマンド追加、recharts/nav は MVP 縮退可 | § 8 diet calibrate 新設、§ 7 縮退オプション明記 |
+
+### rev 4 (2026-05-25) — final
+| codex 指摘 | 反映場所 |
+|---|---|
+| Medium: load 後の DTO 正規化で unknown field が silent drop され schema が catch しない | § 7 merge 手順を「raw load → schema validate → DTO → merge → schema validate → write」の 6 ステップに明文化、§ 12 で 2 段 validate のテストを明記 |
+| Minor: § 5 サンプルの `source: activities[].calories` が default の marginal と不整合 | § 5 サンプル表示を `source: marginal` に修正 |
 
 ### rev 3 (2026-05-25)
 | codex 指摘 | 反映場所 |
