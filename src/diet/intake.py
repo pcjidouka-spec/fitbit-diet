@@ -76,6 +76,7 @@ def decide_intake_kcal(
     has_baseline = bootstrap_baseline is not None
 
     if is_complete:
+        assert rec is not None, "complete day implies non-empty events"
         return IntakeDecision(intake_kcal=rec, label="recorded_authoritative", n_samples=n_samples)
 
     if rec is not None:
@@ -88,10 +89,11 @@ def decide_intake_kcal(
                 recorded_part=rec, supplement_part=est - rec, n_samples=n_samples,
             )
         if has_baseline:
-            est = max(rec, bootstrap_baseline)
+            if rec >= bootstrap_baseline:
+                return IntakeDecision(intake_kcal=rec, label="recorded_partial_high", n_samples=n_samples)
             return IntakeDecision(
-                intake_kcal=est, label="estimated_baseline_supplement",
-                recorded_part=rec, supplement_part=est - rec, n_samples=n_samples,
+                intake_kcal=bootstrap_baseline, label="estimated_baseline_supplement",
+                recorded_part=rec, supplement_part=bootstrap_baseline - rec, n_samples=n_samples,
             )
         return IntakeDecision(intake_kcal=rec, label="recorded_no_baseline", n_samples=n_samples)
 

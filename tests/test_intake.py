@@ -185,6 +185,13 @@ def test_case3_partial_no_avg_baseline_supplemented():
     assert d.label == "estimated_baseline_supplement"
 
 
+def test_case3_partial_recorded_high_with_baseline_only():
+    """Row 3 splits like Row 2: if recorded >= baseline (no avg), use recorded as-is."""
+    d = decide_intake_kcal([E(2500, "append")], past_avg_val=None, n_samples=0, bootstrap_baseline=2000)
+    assert d.intake_kcal == 2500
+    assert d.label == "recorded_partial_high"
+
+
 def test_case4_partial_no_avg_no_baseline():
     d = decide_intake_kcal([E(500, "append")], past_avg_val=None, n_samples=0, bootstrap_baseline=None)
     assert d.intake_kcal == 500
