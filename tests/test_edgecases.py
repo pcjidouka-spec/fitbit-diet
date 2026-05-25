@@ -607,3 +607,45 @@ def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mock
     result = runner.invoke(app, ["sync"])
     assert result.exit_code != 0
     assert "diet auth" in result.output
+
+
+def test_cli_sync_with_real_refresh_failure_directs_to_auth(
+    tmp_path, monkeypatch, httpx_mock
+):
+    """Codex P1 regression: without mocking ``run_sync_async`` itself, a
+    revoked refresh token (HTTP 400 on /oauth2/token returned during the
+    401-triggered refresh) must still surface as a ``diet auth`` hint and
+    non-zero exit — i.e. the per-day try/except must not swallow it."""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.db import Config, Token, open_db, save_config, save_token_atomic
+
+    conn = open_db(tmp_path / "diet.db")
+    save_config(
+        conn,
+        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
+    )
+    save_token_atomic(conn, Token("STALE", "REVOKED", datetime(2030, 1, 1), "UID"))
+
+    import re
+
+    # First per-day API call → 401 (token stale). Triggers refresh → 400.
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.fitbit\.com/1/user/-/activities/date/.*\.json"),
+        status_code=401,
+        json={"errors": [{"errorType": "expired_token"}]},
+    )
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/oauth2/token",
+        method="POST",
+        status_code=400,
+        json={"errors": [{"errorType": "invalid_grant"}]},
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync", "--days", "1"])
+    assert result.exit_code != 0, result.output
+    # The hint must be visible — Click merges stderr into result.output by
+    # default, so a single `in` check covers both echo() streams.
+    assert "diet auth" in result.output

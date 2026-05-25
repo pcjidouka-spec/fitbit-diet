@@ -190,7 +190,7 @@ def sync(days: int) -> None:
 
     import httpx
 
-    from diet.cli_helpers import run_sync_async
+    from diet.cli_helpers import RefreshTokenError, run_sync_async
     from diet.db import load_token
 
     conn = open_db(_data_dir() / "diet.db")
@@ -198,12 +198,12 @@ def sync(days: int) -> None:
         raise click.ClickException("Not authenticated. Run `diet init` first.")
     try:
         asyncio.run(run_sync_async(conn, days=days))
-    except httpx.HTTPStatusError as e:
-        # Most commonly thrown by ``refresh_access_token`` when the refresh
-        # token has been revoked (HTTP 400 invalid_grant). The activity /
-        # weight per-day fetches inside ``run_sync_async`` swallow their own
-        # errors, so any HTTPStatusError that escapes is an auth-layer
-        # failure and the user needs to re-run ``diet auth``.
+    except (RefreshTokenError, httpx.HTTPStatusError) as e:
+        # Auth-layer failure (revoked refresh token / invalid_grant). The
+        # per-day fetch inside ``run_sync_async`` swallows transient errors,
+        # so anything reaching here is a refresh-side failure and the user
+        # needs to re-run ``diet auth``. ``httpx.HTTPStatusError`` is kept
+        # for tests that mock ``run_sync_async`` directly.
         click.echo(f"sync failed: {e}", err=True)
         click.echo(
             "refresh token が無効になった可能性があります。"
