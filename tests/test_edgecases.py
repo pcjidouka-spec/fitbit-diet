@@ -245,3 +245,34 @@ def test_multi_date_republish_does_not_inflate_rev(tmp_path):
     )
     assert "rev 2" in log.stdout
     assert "rev 3" not in log.stdout
+
+
+def test_unrelated_commit_with_iso_date_does_not_inflate_rev(tmp_path):
+    """Codex follow-up: a non-publish commit that happens to contain the date
+    in its message (e.g. release notes) must not be counted toward rev N."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    # Unrelated commit whose message mentions the same ISO date.
+    (repo / "NOTES.md").write_text("release on 2026-05-25\n")
+    subprocess.run(["git", "add", "NOTES.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "docs: release notes 2026-05-25"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25), steps=1, distance_km=1.0, exercise_kcal=1, weight_kg=70.0
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    log = subprocess.run(
+        ["git", "log", "--oneline", "-1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # The diet publish was the first one — must not carry a rev suffix.
+    assert "rev" not in log.stdout
+    assert "diet: 2026-05-25 update" in log.stdout

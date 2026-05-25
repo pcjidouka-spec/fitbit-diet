@@ -267,8 +267,15 @@ def _next_rev(repo_path: Path, date_labels: list[str]) -> int:
     """
     counts: list[int] = []
     for d in date_labels:
+        # Match only canonical diet-publish commits (``diet: ... <date> ...
+        # update`` with an optional ``(rev N)`` suffix) so unrelated repo
+        # commits whose message happens to contain the same ISO date string
+        # (release notes, manual corrections, etc.) are not counted.
+        # `-E` enables extended regex; the pattern allows extra dates and
+        # whitespace around the target date.
+        pattern = rf"^diet: ([0-9-]+, )*{d}(, [0-9-]+)* update( \(rev [0-9]+\))?$"
         result = subprocess.run(
-            ["git", "log", "--all", "--oneline", "--grep", d],
+            ["git", "log", "--all", "--oneline", "-E", "--grep", pattern],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -276,9 +283,6 @@ def _next_rev(repo_path: Path, date_labels: list[str]) -> int:
         )
         if result.returncode != 0:
             return 1
-        # Each line is one prior publish that mentioned this date in its
-        # commit message; --grep matches any substring so ``diet: 2026-05-25
-        # update`` and ``diet: 2026-05-25, 2026-05-26 update`` both count.
         counts.append(
             sum(1 for _ in result.stdout.strip().splitlines() if _.strip())
         )
