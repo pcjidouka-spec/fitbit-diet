@@ -276,3 +276,27 @@ def test_unrelated_commit_with_iso_date_does_not_inflate_rev(tmp_path):
     # The diet publish was the first one — must not carry a rev suffix.
     assert "rev" not in log.stdout
     assert "diet: 2026-05-25 update" in log.stdout
+
+
+# --- Task 9.5: 429 rate limit reset_seconds -------------------------------
+
+
+async def test_429_reset_seconds_in_state(httpx_mock):
+    """Edge-case re-confirmation of 429 propagation: rate_limit.reset_seconds
+    must reflect the ``Fitbit-Rate-Limit-Reset`` header even when the request
+    fails. Already exercised by test_fitbit_client_rate_limit; kept here for
+    the Phase 9 integration suite."""
+    import httpx
+
+    from diet.fitbit_client import FitbitClient
+
+    httpx_mock.add_response(
+        url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json",
+        status_code=429,
+        headers={"Fitbit-Rate-Limit-Reset": "600"},
+        json={},
+    )
+    client = FitbitClient(access_token="A")
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_activity_summary("2026-05-25")
+    assert client.rate_limit.reset_seconds == 600
