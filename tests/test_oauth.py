@@ -1,6 +1,11 @@
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from diet.oauth import generate_self_signed_cert
+from diet.oauth import (
+    FITBIT_AUTHZ_URL,
+    build_authorization_url,
+    generate_self_signed_cert,
+)
 
 
 def test_generate_cert_creates_files(tmp_path: Path):
@@ -35,3 +40,14 @@ def test_cert_validity_period(tmp_path):
     actual = getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after.replace(tzinfo=timezone.utc)
     delta = abs((actual - expected).total_seconds())
     assert delta < 60  # within 60s of expected
+
+
+def test_build_authz_url_params():
+    url = build_authorization_url("CID", "https://localhost:8765/callback", ["activity", "weight"], "state123")
+    assert url.startswith(FITBIT_AUTHZ_URL)
+    qs = parse_qs(urlparse(url).query)
+    assert qs["client_id"] == ["CID"]
+    assert qs["response_type"] == ["code"]
+    assert qs["redirect_uri"] == ["https://localhost:8765/callback"]
+    assert qs["scope"] == ["activity weight"]
+    assert qs["state"] == ["state123"]
