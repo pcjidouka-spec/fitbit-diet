@@ -13,10 +13,12 @@ Never import this module from any layer that reads `intake_events`.
 """
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import click
 import jsonschema
 
 
@@ -161,6 +163,28 @@ def publish_to_hpasaneel(
     """
     log_path = repo_path / diet_root / "log.json"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Before any git or file ops: detect manual edits to log.json that the
+    # user never staged. If we silently overwrite them, weeks of hand-edits
+    # disappear. Spec §7 "log.json に手動変更が無いか確認".
+    rel_log = str(log_path.relative_to(repo_path)).replace("\\", "/")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", rel_log],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        # Prompt via click.confirm so tests can patch it. Test patches the
+        # symbol on the `click` module, so we resolve it lazily here.
+        proceed = click.confirm(
+            f"{rel_log} has uncommitted manual changes. Overwrite?",
+            default=False,
+        )
+        if not proceed:
+            click.echo("publish aborted by user.")
+            sys.exit(1)
 
     if do_push:
         subprocess.run(["git", "pull", "--rebase"], cwd=repo_path, check=True)

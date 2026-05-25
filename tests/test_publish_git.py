@@ -1,6 +1,9 @@
 import subprocess
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from diet.publish import PublicDayRecord, publish_to_hpasaneel
 
@@ -67,3 +70,39 @@ def test_publish_stages_only_log_json(tmp_path):
         text=True,
     )
     assert "?? untracked.txt" in status.stdout
+
+
+# --- Task 5.7: abort on manual log.json changes --------------------------
+
+
+def test_publish_aborts_on_manual_log_changes(tmp_path):
+    """If log.json has unstaged manual edits, publish must prompt
+    via click.confirm. When the user answers no, publish must SystemExit
+    rather than silently overwrite the manual edits."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    # First publish — clean run, no prompt expected.
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25),
+        steps=1,
+        distance_km=1.0,
+        exercise_kcal=50,
+        weight_kg=70.0,
+    )
+    publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    # Manually corrupt the just-committed log.json (no `git add`).
+    log_file = repo / "content/diet/log.json"
+    log_file.write_text(log_file.read_text(encoding="utf-8") + "\n# manual mess",
+                        encoding="utf-8")
+    # Second publish — must detect the unstaged diff, prompt, and abort on no.
+    rec2 = PublicDayRecord(
+        date=date(2026, 5, 26),
+        steps=2,
+        distance_km=2.0,
+        exercise_kcal=60,
+        weight_kg=70.0,
+    )
+    with patch("click.confirm", return_value=False):
+        with pytest.raises(SystemExit):
+            publish_to_hpasaneel(repo, "content/diet", [rec2], do_push=False)
