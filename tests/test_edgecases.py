@@ -489,7 +489,13 @@ def test_orchestrator_push_failure_shows_manual_resolution_message(
 
     from diet.orchestrator import run_daily_flow
 
-    with pytest.raises(_click.ClickException):
+    with pytest.raises(_click.ClickException) as exc:
         run_daily_flow(data_dir=tmp_path, target_date=target)
-    out = capsys.readouterr().out
-    assert "手動" in out or "manually" in out.lower() or "pull --rebase" in out
+    captured = capsys.readouterr()
+    # Hint must be reachable from both: (a) the captured output streams so
+    # scheduled / scripted callers see it during execution, and (b) the
+    # ClickException message so callers that catch and log the exception
+    # still get the recovery instructions.
+    full = captured.out + captured.err
+    assert "手動" in full or "manually" in full.lower() or "pull --rebase" in full
+    assert "pull --rebase" in exc.value.message
