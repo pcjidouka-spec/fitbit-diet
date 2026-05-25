@@ -84,6 +84,45 @@ def _assemble_final_dict(
     }
 
 
+def build_records_from_db(
+    conn, target_dates: list[date], exercise_calorie_source: str
+) -> list[PublicDayRecord]:
+    """Read publishable records from the DB.
+
+    ★ Privacy boundary: this function MUST only SELECT from ``daily_activity``
+    and ``daily_weight``. It must never touch ``intake_events`` (which carries
+    meal ``note`` strings), ``config``, or ``fitbit_token``. The boundary
+    tests in ``tests/test_publish_boundary.py`` capture executed SQL via
+    ``set_trace_callback`` and assert those forbidden tables are never named.
+    """
+    # Local import keeps the SELECT helpers narrow: only daily_activity +
+    # daily_weight accessors. Do NOT add `get_events_*` here.
+    from diet.db import get_daily_activity, get_latest_weight_on_or_before
+
+    records: list[PublicDayRecord] = []
+    for d in target_dates:
+        a = get_daily_activity(conn, d)
+        w = get_latest_weight_on_or_before(conn, d)
+        if a is None or w is None:
+            continue
+        if exercise_calorie_source == "logged_activities":
+            ex = a.logged_activities_kcal or 0
+        else:
+            # default to marginal (also covers the explicit "marginal" value
+            # and the spec's "decide_later" fallback)
+            ex = a.marginal_kcal or 0
+        records.append(
+            PublicDayRecord(
+                date=d,
+                steps=a.steps,
+                distance_km=a.distance_km,
+                exercise_kcal=ex,
+                weight_kg=w.weight_kg,
+            )
+        )
+    return records
+
+
 def build_log_json(
     records: list[PublicDayRecord], existing_doc: dict | None
 ) -> dict:
