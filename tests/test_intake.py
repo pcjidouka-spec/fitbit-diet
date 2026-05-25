@@ -1,5 +1,5 @@
 from datetime import datetime
-from diet.intake import IntakeEvent, recorded_sum
+from diet.intake import IntakeEvent, recorded_sum, is_complete_day
 
 
 def E(kcal, op, ts="2026-05-25T12:00:00", id=0):
@@ -44,3 +44,19 @@ def test_recorded_sum_same_ts_id_asc_tiebreak():
     events = [E(2000, "override", ts=ts, id=2), E(1500, "override", ts=ts, id=1)]
     # id 1 -> 2 の順 → 後の id=2 (2000) が勝つ
     assert recorded_sum(events) == 2000
+
+
+def test_complete_with_override():
+    assert is_complete_day([E(2000, "override")]) is True
+
+
+def test_complete_append_only_false():
+    assert is_complete_day([E(500, "append")]) is False
+
+
+def test_complete_empty_false():
+    assert is_complete_day([]) is False
+
+
+def test_complete_mixed_with_override_true():
+    assert is_complete_day([E(500, "append"), E(2000, "override")]) is True

@@ -23,3 +23,7 @@ def recorded_sum(events: list[IntakeEvent]) -> int | None:
     baseline = sorted_events[last_override_idx].kcal
     after = sum(e.kcal for e in sorted_events[last_override_idx + 1:] if e.op == "append")
     return baseline + after
+
+
+def is_complete_day(events: list[IntakeEvent]) -> bool:
+    return any(e.op == "override" for e in events)
