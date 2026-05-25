@@ -80,3 +80,19 @@ def _run_initial_sync(conn, days: int) -> None:
     from diet.cli_helpers import run_sync_async
 
     asyncio.run(run_sync_async(conn, days=days))
+
+
+@app.command()
+@click.option("--days", default=7, type=int)
+def sync(days: int) -> None:
+    """Fetch Fitbit activity + weight for the last N days."""
+    import asyncio
+
+    from diet.cli_helpers import run_sync_async
+    from diet.db import load_token
+
+    conn = open_db(_data_dir() / "diet.db")
+    if load_token(conn) is None:
+        raise click.ClickException("Not authenticated. Run `diet init` first.")
+    asyncio.run(run_sync_async(conn, days=days))
+    click.echo(f"sync complete ({days} days)")
