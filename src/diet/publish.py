@@ -187,12 +187,31 @@ def publish_to_hpasaneel(
             sys.exit(1)
         # User confirmed overwrite. Discard the dirty working-tree version by
         # restoring the committed copy (or removing the file if it is only
-        # untracked) — otherwise the subsequent `json.loads` below would
-        # consume the dirty content and either crash or silently re-publish it.
-        if status.stdout.lstrip().startswith("??"):
+        # untracked / staged-but-new) — otherwise the subsequent `json.loads`
+        # below would consume the dirty content and either crash or silently
+        # re-publish it.
+        #
+        # Porcelain status codes (first 2 chars, XY = index/worktree):
+        #   "??"     untracked            → unlink only
+        #   "A " / "AM" / "AD"  staged-add, never committed → unlink + git rm --cached
+        #                                  (HEAD has no version to restore from)
+        #   " M" / "M " / "MM"  modified tracked file → checkout HEAD restores
+        first_line = status.stdout.splitlines()[0] if status.stdout else ""
+        if first_line.startswith("??"):
             # Untracked dirty file: nothing in HEAD to restore. Just remove it
             # so the existing-doc load below sees no prior content.
             log_path.unlink()
+        elif first_line[:1] == "A":
+            # Staged but never committed (failed first-publish residue). HEAD
+            # has no prior version, so `git checkout HEAD --` would fail.
+            # Unstage and remove so the load sees no prior content.
+            subprocess.run(
+                ["git", "rm", "--cached", "--", rel_log],
+                cwd=repo_path,
+                check=True,
+            )
+            if log_path.exists():
+                log_path.unlink()
         else:
             subprocess.run(
                 ["git", "checkout", "HEAD", "--", rel_log],
