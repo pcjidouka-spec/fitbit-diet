@@ -16,14 +16,39 @@ from diet.oauth import refresh_access_token
 
 
 class RefreshTokenError(Exception):
-    """Raised when the OAuth refresh-token exchange itself failed.
+    """Raised when the OAuth refresh-token itself is invalid (revoked).
 
-    Distinct from per-day API failures so the CLI sync handler can detect
-    auth-layer failures and direct the user to ``diet auth`` — see
-    ``diet.cli.sync``. Without this distinction, the per-day ``try/except``
-    loop below would swallow refresh errors as transient day-by-day warnings
-    and the CLI would exit 0 even though the token is dead.
+    ONLY raised for ``invalid_grant`` (and look-alikes that indicate a dead
+    refresh token). Transient HTTP failures from the token endpoint —
+    5xx outages, 429 rate limits, ``invalid_client`` credentials errors —
+    are re-raised as the original ``httpx.HTTPStatusError`` so the CLI can
+    distinguish "re-auth will fix this" from "wait and retry".
     """
+
+
+def _is_invalid_grant(exc: httpx.HTTPStatusError) -> bool:
+    """Return True when the token endpoint response indicates a dead refresh
+    token (``invalid_grant``). Anything else (5xx, 429, ``invalid_client``,
+    network errors with no parseable body) returns False so the caller can
+    re-raise as a non-auth failure.
+
+    Fitbit returns errors in two shapes:
+      ``{"errors": [{"errorType": "invalid_grant", ...}]}``
+      ``{"error": "invalid_grant", ...}``  (OAuth2 RFC 6749)
+    """
+    resp = exc.response
+    if resp is None or resp.status_code != 400:
+        return False
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001 — body might not be JSON
+        return False
+    if body.get("error") == "invalid_grant":
+        return True
+    errors = body.get("errors") or []
+    return any(
+        isinstance(e, dict) and e.get("errorType") == "invalid_grant" for e in errors
+    )
 
 
 async def run_sync_async(conn, days: int):
@@ -42,9 +67,16 @@ async def run_sync_async(conn, days: int):
                 tok.refresh_token,
             )
         except httpx.HTTPStatusError as e:
-            # invalid_grant (revoked refresh token) lives here. Wrap so the
-            # per-day except below re-raises instead of swallowing.
-            raise RefreshTokenError(str(e)) from e
+            # Only ``invalid_grant`` indicates a permanently dead refresh
+            # token that the user can fix by re-running ``diet auth``. Other
+            # token-endpoint failures (5xx outages, 429 rate limits,
+            # ``invalid_client`` credential errors) should propagate as the
+            # original HTTPStatusError so the CLI handler can surface a
+            # different message ("transient — try later") instead of falsely
+            # telling the user to re-auth.
+            if _is_invalid_grant(e):
+                raise RefreshTokenError(str(e)) from e
+            raise
         save_token_atomic(conn, new_tok)
         return new_tok.access_token
 

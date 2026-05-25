@@ -198,12 +198,8 @@ def sync(days: int) -> None:
         raise click.ClickException("Not authenticated. Run `diet init` first.")
     try:
         asyncio.run(run_sync_async(conn, days=days))
-    except (RefreshTokenError, httpx.HTTPStatusError) as e:
-        # Auth-layer failure (revoked refresh token / invalid_grant). The
-        # per-day fetch inside ``run_sync_async`` swallows transient errors,
-        # so anything reaching here is a refresh-side failure and the user
-        # needs to re-run ``diet auth``. ``httpx.HTTPStatusError`` is kept
-        # for tests that mock ``run_sync_async`` directly.
+    except RefreshTokenError as e:
+        # Refresh token is dead (invalid_grant). Re-auth is the only fix.
         click.echo(f"sync failed: {e}", err=True)
         click.echo(
             "refresh token が無効になった可能性があります。"
@@ -213,4 +209,14 @@ def sync(days: int) -> None:
         raise click.ClickException(
             "refresh token invalid — run `diet auth` to re-authenticate."
         ) from e
+    except httpx.HTTPStatusError as e:
+        # Non-invalid_grant HTTP failure from the token endpoint (5xx outage,
+        # 429 rate limit, invalid_client) — surface as transient so the user
+        # does not re-auth unnecessarily.
+        click.echo(f"sync failed (transient): {e}", err=True)
+        click.echo(
+            "Fitbit 側の一時的な障害の可能性があります。時間をおいて再試行してください。",
+            err=True,
+        )
+        raise click.ClickException(f"sync failed (transient): {e}") from e
     click.echo(f"sync complete ({days} days)")

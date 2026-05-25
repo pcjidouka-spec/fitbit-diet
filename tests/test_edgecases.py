@@ -581,7 +581,35 @@ async def test_refresh_failure_with_revoked_token_propagates(httpx_mock):
 
 
 def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mocker):
-    """sync 中に refresh が失敗 → ``diet auth`` を案内して exit 非 0."""
+    """sync 中に refresh が無効化 (RefreshTokenError) → ``diet auth`` 案内."""
+    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
+    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    from diet.cli_helpers import RefreshTokenError
+    from diet.db import Config, Token, open_db, save_config, save_token_atomic
+
+    conn = open_db(tmp_path / "diet.db")
+    save_config(
+        conn,
+        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
+    )
+    save_token_atomic(conn, Token("A", "R_REVOKED", datetime(2030, 1, 1), "UID"))
+    mocker.patch(
+        "diet.cli_helpers.run_sync_async",
+        side_effect=RefreshTokenError("invalid_grant"),
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["sync"])
+    assert result.exit_code != 0
+    assert "diet auth" in result.output
+
+
+def test_cli_sync_with_transient_token_error_reports_as_transient(
+    tmp_path, monkeypatch, mocker
+):
+    """Codex P2 regression: a non-invalid_grant token error (e.g. 5xx) must
+    NOT be reported as ``diet auth`` — the user has no auth fix to apply,
+    they need to wait and retry."""
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
     monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
@@ -592,13 +620,13 @@ def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mock
         conn,
         Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
     )
-    save_token_atomic(conn, Token("A", "R_REVOKED", datetime(2030, 1, 1), "UID"))
+    save_token_atomic(conn, Token("A", "R", datetime(2030, 1, 1), "UID"))
     import httpx
 
     mocker.patch(
         "diet.cli_helpers.run_sync_async",
         side_effect=httpx.HTTPStatusError(
-            "refresh failed",
+            "server outage",
             request=mocker.MagicMock(),
             response=mocker.MagicMock(),
         ),
@@ -606,7 +634,9 @@ def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mock
     runner = CliRunner()
     result = runner.invoke(app, ["sync"])
     assert result.exit_code != 0
-    assert "diet auth" in result.output
+    # Must NOT misdirect the user to re-auth for a transient error.
+    assert "diet auth" not in result.output
+    assert "transient" in result.output.lower() or "一時的" in result.output
 
 
 def test_cli_sync_with_real_refresh_failure_directs_to_auth(
