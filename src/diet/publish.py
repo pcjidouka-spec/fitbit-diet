@@ -205,8 +205,13 @@ def publish_to_hpasaneel(
             # Staged but never committed (failed first-publish residue). HEAD
             # has no prior version, so `git checkout HEAD --` would fail.
             # Unstage and remove so the load sees no prior content.
+            #
+            # `-f` is required for AM / AD where the worktree no longer matches
+            # the staged blob — without it `git rm --cached` refuses to avoid
+            # losing staged content. Here the user already confirmed overwrite,
+            # so dropping the staged blob is the intended behaviour.
             subprocess.run(
-                ["git", "rm", "--cached", "--", rel_log],
+                ["git", "rm", "-f", "--cached", "--", rel_log],
                 cwd=repo_path,
                 check=True,
             )

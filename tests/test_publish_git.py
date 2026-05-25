@@ -193,3 +193,47 @@ def test_publish_recovers_from_staged_but_new_log(tmp_path):
     import json
     final = json.loads(log_path.read_text())
     assert any(d["date"] == "2026-05-25" for d in final["days"])
+
+
+def test_publish_recovers_from_staged_then_modified_log(tmp_path):
+    """log.json in status `AM` (staged-add then modified in worktree) must
+    also recover cleanly. `git rm --cached` without `-f` refuses to drop the
+    staged blob when worktree differs from index, so the recovery path needs
+    `-f` to succeed.
+
+    Regression test for codex follow-up P2 finding on commit ad413d0."""
+    repo = tmp_path / "HPasaneel"
+    (repo / "content/diet").mkdir(parents=True)
+    _init_repo(repo)
+    log_path = repo / "content/diet/log.json"
+    # Stage a valid log.json then dirty the worktree copy → status AM.
+    log_path.write_text('{"updated_at": "2026-01-01T00:00:00+09:00", "days": []}')
+    subprocess.run(["git", "add", "content/diet/log.json"], cwd=repo, check=True)
+    log_path.write_text(log_path.read_text() + "\n# garbage")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "content/diet/log.json"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status.startswith("AM"), f"setup expects status 'AM', got: {status!r}"
+    rec = PublicDayRecord(
+        date=date(2026, 5, 25),
+        steps=1,
+        distance_km=1.0,
+        exercise_kcal=1,
+        weight_kg=70.0,
+    )
+    with patch("click.confirm", return_value=True):
+        publish_to_hpasaneel(repo, "content/diet", [rec], do_push=False)
+    last_files = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().splitlines()
+    assert last_files == ["content/diet/log.json"]
+    import json
+    final = json.loads(log_path.read_text())
+    assert any(d["date"] == "2026-05-25" for d in final["days"])
+    assert "garbage" not in log_path.read_text()
