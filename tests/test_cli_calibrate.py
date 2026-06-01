@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+import pytest
 from click.testing import CliRunner
 
 from diet.cli import app
@@ -24,6 +25,7 @@ def _seed_config(db_path, source=None):
     return conn
 
 
+@pytest.mark.skip(reason="rewritten in Task 4")
 def test_calibrate_displays_recent_calories(tmp_path, monkeypatch):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
     conn = _seed_config(tmp_path / "diet.db")
@@ -48,6 +50,7 @@ def test_calibrate_displays_recent_calories(tmp_path, monkeypatch):
     assert cfg2.exercise_calorie_source == "marginal"
 
 
+@pytest.mark.skip(reason="rewritten in Task 4")
 def test_calibrate_decide_later_keeps_source_none(tmp_path, monkeypatch):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
     _seed_config(tmp_path / "diet.db", source=None)

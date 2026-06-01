@@ -5,16 +5,12 @@ belongs in cli_helpers.py.
 """
 
 
-def resolve_exercise_kcal(activity, source: str | None) -> int:
-    """Pick exercise_kcal from a DailyActivityRow per the configured source.
+def resolve_exercise_kcal(activity) -> int:
+    """Exercise kcal for the day = active-energy-burned (BMR-free).
 
-    ``source`` is ``"logged_activities"`` to use ``logged_activities_kcal``,
-    anything else (``"marginal"`` / ``None`` / ``"decide_later"``) falls back to
-    ``marginal_kcal``. Mirrors ``publish.build_records_from_db``'s default so
-    today's on-screen exercise number matches what will be published.
-    """
+    Google Health has no marginalCalories; active-energy-burned is the
+    documented BMR-free successor. total_calories_kcal is diagnostic-only
+    and is intentionally NOT selectable, to prevent BMR double-counting."""
     if activity is None:
         return 0
-    if source == "logged_activities":
-        return activity.logged_activities_kcal or 0
-    return activity.marginal_kcal or 0
+    return activity.active_energy_kcal or 0

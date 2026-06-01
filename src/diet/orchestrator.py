@@ -110,7 +110,7 @@ def run_daily_flow(
     avg, n = past_avg(history, today)
     today_events = get_events_for_date(conn, today)
     decision = decide_intake_kcal(today_events, avg, n, cfg.bootstrap_daily_kcal)
-    exercise = resolve_exercise_kcal(activity, cfg.exercise_calorie_source)
+    exercise = resolve_exercise_kcal(activity)
     click.echo("[4/5 収支]")
     click.echo("  " + format_intake_display(decision))
     if bmr is not None and weight is not None and activity is not None:
@@ -134,9 +134,7 @@ def run_daily_flow(
         return
     from diet.publish import build_records_from_db, publish_to_hpasaneel
 
-    records = build_records_from_db(
-        conn, [today], cfg.exercise_calorie_source or "marginal"
-    )
+    records = build_records_from_db(conn, [today])
     try:
         publish_to_hpasaneel(
             Path(cfg.hpasaneel_path),
@@ -197,7 +195,7 @@ def run_show_only(data_dir: Path, target_date: _date) -> None:
     if weight is not None and activity is not None:
         age = age_at(cfg.birthday, target_date)
         bmr = mifflin_st_jeor(weight.weight_kg, cfg.height_cm, age, cfg.sex)
-        exercise = resolve_exercise_kcal(activity, cfg.exercise_calorie_source)
+        exercise = resolve_exercise_kcal(activity)
         click.echo(
             format_balance(
                 decision.intake_kcal,

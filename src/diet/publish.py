@@ -90,7 +90,7 @@ def _assemble_final_dict(
 
 
 def build_records_from_db(
-    conn, target_dates: list[date], exercise_calorie_source: str
+    conn, target_dates: list[date]
 ) -> list[PublicDayRecord]:
     """Read publishable records from the DB.
 
@@ -99,6 +99,9 @@ def build_records_from_db(
     meal ``note`` strings), ``config``, or ``fitbit_token``. The boundary
     tests in ``tests/test_publish_boundary.py`` capture executed SQL via
     ``set_trace_callback`` and assert those forbidden tables are never named.
+
+    exercise_kcal = active_energy_kcal (BMR-free). total_calories_kcal is
+    diagnostic-only and is never published, to prevent BMR double-counting.
     """
     # Local import keeps the SELECT helpers narrow: only daily_activity +
     # daily_weight accessors. Do NOT add `get_events_*` here.
@@ -110,18 +113,12 @@ def build_records_from_db(
         w = get_latest_weight_on_or_before(conn, d)
         if a is None or w is None:
             continue
-        if exercise_calorie_source == "logged_activities":
-            ex = a.logged_activities_kcal or 0
-        else:
-            # default to marginal (also covers the explicit "marginal" value
-            # and the spec's "decide_later" fallback)
-            ex = a.marginal_kcal or 0
         records.append(
             PublicDayRecord(
                 date=d,
                 steps=a.steps,
                 distance_km=a.distance_km,
-                exercise_kcal=ex,
+                exercise_kcal=a.active_energy_kcal or 0,
                 weight_kg=w.weight_kg,
             )
         )

@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS daily_activity (
   date TEXT PRIMARY KEY,
   steps INTEGER NOT NULL,
   distance_km REAL NOT NULL,
-  logged_activities_kcal INTEGER,
-  marginal_kcal INTEGER,
+  total_calories_kcal INTEGER,
+  active_energy_kcal INTEGER,
   last_synced TEXT NOT NULL
 );
 
@@ -54,8 +54,25 @@ CREATE TABLE IF NOT EXISTS fitbit_token (
   rotated_at TEXT NOT NULL
 );
 
-INSERT INTO _meta (schema_version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM _meta);
+INSERT INTO _meta (schema_version) SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM _meta);
 """
+
+
+def _migrate(conn) -> None:
+    """Idempotent v1 (Fitbit) → v2 (Google Health) migration.
+
+    A fresh DB is already created at v2 by MIGRATION_SQL, so each step is
+    guarded by checking for the OLD artifact before acting."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_activity)").fetchall()}
+    if "marginal_kcal" in cols:
+        conn.execute("ALTER TABLE daily_activity RENAME COLUMN marginal_kcal TO active_energy_kcal")
+    if "logged_activities_kcal" in cols:
+        conn.execute("ALTER TABLE daily_activity RENAME COLUMN logged_activities_kcal TO total_calories_kcal")
+    version = conn.execute("SELECT schema_version FROM _meta").fetchone()[0]
+    if version < 2:
+        # Fitbit tokens are NOT transferable to Google — force a fresh `diet auth`.
+        conn.execute("DELETE FROM fitbit_token")
+        conn.execute("UPDATE _meta SET schema_version = 2")
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -63,6 +80,7 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(MIGRATION_SQL)
+    _migrate(conn)
     conn.commit()
     return conn
 
@@ -106,35 +124,35 @@ class DailyActivityRow:
     date: date
     steps: int
     distance_km: float
-    logged_activities_kcal: int | None
-    marginal_kcal: int | None
+    total_calories_kcal: int | None
+    active_energy_kcal: int | None
 
 
 def upsert_daily_activity(conn, d: date, steps: int, distance_km: float,
-                          logged_activities_kcal: int | None, marginal_kcal: int | None) -> None:
+                          total_calories_kcal: int | None, active_energy_kcal: int | None) -> None:
     conn.execute(
-        """INSERT INTO daily_activity (date, steps, distance_km, logged_activities_kcal, marginal_kcal, last_synced)
+        """INSERT INTO daily_activity (date, steps, distance_km, total_calories_kcal, active_energy_kcal, last_synced)
            VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(date) DO UPDATE SET
              steps=excluded.steps, distance_km=excluded.distance_km,
-             logged_activities_kcal=excluded.logged_activities_kcal,
-             marginal_kcal=excluded.marginal_kcal,
+             total_calories_kcal=excluded.total_calories_kcal,
+             active_energy_kcal=excluded.active_energy_kcal,
              last_synced=excluded.last_synced""",
-        (_ds(d), steps, distance_km, logged_activities_kcal, marginal_kcal, datetime.now().isoformat()),
+        (_ds(d), steps, distance_km, total_calories_kcal, active_energy_kcal, datetime.now().isoformat()),
     )
     conn.commit()
 
 
 def get_daily_activity(conn, d: date) -> DailyActivityRow | None:
     row = conn.execute(
-        "SELECT date, steps, distance_km, logged_activities_kcal, marginal_kcal FROM daily_activity WHERE date = ?",
+        "SELECT date, steps, distance_km, total_calories_kcal, active_energy_kcal FROM daily_activity WHERE date = ?",
         (_ds(d),),
     ).fetchone()
     if row is None:
         return None
     return DailyActivityRow(
         date=date.fromisoformat(row[0]), steps=row[1], distance_km=row[2],
-        logged_activities_kcal=row[3], marginal_kcal=row[4],
+        total_calories_kcal=row[3], active_energy_kcal=row[4],
     )
 
 

@@ -114,8 +114,8 @@ async def run_sync_async(conn, days: int):
                 d,
                 steps=summary.get("steps", 0),
                 distance_km=distance_km,
-                logged_activities_kcal=logged,
-                marginal_kcal=marginal,
+                total_calories_kcal=logged,
+                active_energy_kcal=marginal,
             )
             weights = await client.get_weight_log(d.isoformat())
             for w in weights:

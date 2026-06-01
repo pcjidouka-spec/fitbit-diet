@@ -43,7 +43,7 @@ def test_orchestrator_complete_day_no_publish(setup_db, monkeypatch, mocker):
     target = date(2026, 5, 25)
     upsert_daily_activity(
         conn, target, steps=8234, distance_km=5.3,
-        logged_activities_kcal=280, marginal_kcal=300,
+        total_calories_kcal=280, active_energy_kcal=300,
     )
     upsert_daily_weight(conn, target, 71.2)
     mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)
@@ -71,7 +71,7 @@ def test_orchestrator_skip_intake_uses_avg(setup_db, monkeypatch, mocker):
         )
     upsert_daily_activity(
         conn, target, steps=8000, distance_km=5.0,
-        logged_activities_kcal=250, marginal_kcal=300,
+        total_calories_kcal=250, active_energy_kcal=300,
     )
     upsert_daily_weight(conn, target, 71.2)
     mocker.patch("diet.cli_helpers.run_sync_async", return_value=None)

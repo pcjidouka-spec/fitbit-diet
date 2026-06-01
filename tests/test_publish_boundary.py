@@ -74,14 +74,12 @@ def test_intake_notes_never_reach_log_json(tmp_path):
         target,
         steps=8234,
         distance_km=5.3,
-        logged_activities_kcal=280,
-        marginal_kcal=340,
+        total_calories_kcal=280,
+        active_energy_kcal=340,
     )
     upsert_daily_weight(conn, target, 71.2)
 
-    records = build_records_from_db(
-        conn, target_dates=[target], exercise_calorie_source="marginal"
-    )
+    records = build_records_from_db(conn, target_dates=[target])
     out = build_log_json(records, existing_doc=None)
     serialized = json.dumps(out, ensure_ascii=False)
 
@@ -108,16 +106,14 @@ def test_publish_function_does_not_select_intake_events(tmp_path):
         target,
         steps=1,
         distance_km=1.0,
-        logged_activities_kcal=1,
-        marginal_kcal=1,
+        total_calories_kcal=1,
+        active_energy_kcal=1,
     )
     upsert_daily_weight(conn, target, 70.0)
 
     captured_sql: list[str] = []
     conn.set_trace_callback(captured_sql.append)
-    build_records_from_db(
-        conn, target_dates=[target], exercise_calorie_source="marginal"
-    )
+    build_records_from_db(conn, target_dates=[target])
     conn.set_trace_callback(None)
 
     intake_sqls = [s for s in captured_sql if "intake_events" in s.lower()]
@@ -137,9 +133,7 @@ def test_publish_function_only_selects_allowed_tables(tmp_path):
 
     captured: list[str] = []
     conn.set_trace_callback(captured.append)
-    build_records_from_db(
-        conn, target_dates=[target], exercise_calorie_source="marginal"
-    )
+    build_records_from_db(conn, target_dates=[target])
     conn.set_trace_callback(None)
 
     forbidden_tables = ["intake_events", "config", "fitbit_token"]

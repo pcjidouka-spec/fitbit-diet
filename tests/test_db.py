@@ -152,3 +152,41 @@ def test_token_atomic_replacement(tmp_path):
     loaded = load_token(conn)
     assert loaded.access_token == "A2"
     assert conn.execute("SELECT COUNT(*) FROM fitbit_token").fetchone()[0] == 1
+
+
+# ---------- Task 1 (Google Health migration): v1 → v2 schema migration ----------
+
+
+def test_v1_db_migrates_columns_and_wipes_token(tmp_path):
+    """A pre-existing v1 schema (Fitbit) must be migrated to v2: activity
+    columns renamed, stale token row deleted, schema_version bumped."""
+    import sqlite3
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE _meta (schema_version INTEGER NOT NULL);
+        INSERT INTO _meta VALUES (1);
+        CREATE TABLE daily_activity (
+          date TEXT PRIMARY KEY, steps INTEGER NOT NULL, distance_km REAL NOT NULL,
+          logged_activities_kcal INTEGER, marginal_kcal INTEGER, last_synced TEXT NOT NULL);
+        INSERT INTO daily_activity VALUES ('2026-05-25', 8000, 5.0, 250, 300, '2026-05-25T00:00:00');
+        CREATE TABLE fitbit_token (
+          id INTEGER PRIMARY KEY CHECK (id=1), access_token TEXT NOT NULL,
+          refresh_token TEXT NOT NULL, expires_at TEXT NOT NULL, user_id TEXT NOT NULL,
+          rotated_at TEXT NOT NULL);
+        INSERT INTO fitbit_token VALUES (1,'A','R','2030-01-01T00:00:00','U','2026-05-25T00:00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from diet.db import open_db, get_daily_activity, load_token
+    conn = open_db(db)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_activity)").fetchall()}
+    assert "active_energy_kcal" in cols and "total_calories_kcal" in cols
+    assert "marginal_kcal" not in cols and "logged_activities_kcal" not in cols
+    a = get_daily_activity(conn, date(2026, 5, 25))
+    assert a.active_energy_kcal == 300 and a.total_calories_kcal == 250
+    assert load_token(conn) is None  # stale Fitbit token wiped
+    assert conn.execute("SELECT schema_version FROM _meta").fetchone()[0] == 2
