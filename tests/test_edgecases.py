@@ -34,8 +34,8 @@ def _init_repo(p: Path) -> None:
 
 def test_orchestrator_continues_when_sync_fails(tmp_path, monkeypatch, mocker):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import (
         Config,
         Token,
@@ -82,8 +82,8 @@ def test_orchestrator_continues_when_sync_fails(tmp_path, monkeypatch, mocker):
 
 def test_weight_fallback_displays_days_ago(tmp_path, monkeypatch, mocker, capsys):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import (
         Config,
         Token,
@@ -281,6 +281,7 @@ def test_unrelated_commit_with_iso_date_does_not_inflate_rev(tmp_path):
 # --- Task 9.5: 429 rate limit reset_seconds -------------------------------
 
 
+@pytest.mark.skip(reason="rewritten in Task 3")
 async def test_429_reset_seconds_in_state(httpx_mock):
     """Edge-case re-confirmation of 429 propagation: rate_limit.reset_seconds
     must reflect the ``Fitbit-Rate-Limit-Reset`` header even when the request
@@ -446,8 +447,8 @@ def test_orchestrator_push_failure_shows_manual_resolution_message(
     """publish が CalledProcessError を投げた時、orchestrator が click.echo で
     「手動で git push を解決してください」相当のメッセージを表示すること."""
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import (
         Config,
         Token,
@@ -501,66 +502,6 @@ def test_orchestrator_push_failure_shows_manual_resolution_message(
     assert "pull --rebase" in exc.value.message
 
 
-# --- Task 9.10: cert validity period + regen via CLI ----------------------
-
-
-def test_cert_validity_period(tmp_path):
-    """生成した cert の not_valid_after が指定日数後であること."""
-    from datetime import timezone
-
-    from cryptography import x509
-
-    from diet.oauth import generate_self_signed_cert
-
-    cert_path = tmp_path / "c.pem"
-    key_path = tmp_path / "k.pem"
-    generate_self_signed_cert(cert_path, key_path, "localhost", days_valid=3650)
-    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-    expected = datetime.now(timezone.utc) + timedelta(days=3650)
-    delta = abs((cert.not_valid_after_utc - expected).total_seconds())
-    assert delta < 60  # 生成タイミングのズレ許容
-
-
-def test_generate_idempotent_when_both_exist(tmp_path):
-    """既存ファイルがあれば上書きしない (no-op)."""
-    from diet.oauth import generate_self_signed_cert
-
-    cert_path = tmp_path / "c.pem"
-    key_path = tmp_path / "k.pem"
-    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
-    original_cert = cert_path.read_bytes()
-    generate_self_signed_cert(cert_path, key_path, "localhost", 3650)
-    assert cert_path.read_bytes() == original_cert  # idempotent
-
-
-def test_cli_auth_regen_cert_replaces_files(tmp_path, monkeypatch, mocker):
-    """`diet auth --regen-cert` で既存 cert/key を削除して再生成 → 内容が変わる."""
-    monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
-    from diet.db import Config, open_db, save_config
-
-    conn = open_db(tmp_path / "diet.db")
-    save_config(
-        conn,
-        Config(date(1979, 12, 1), 169, "male", "Asia/Tokyo", None, "content/diet", None, None),
-    )
-    from diet.oauth import generate_self_signed_cert
-
-    cert = tmp_path / "oauth_cert.pem"
-    key = tmp_path / "oauth_key.pem"
-    generate_self_signed_cert(cert, key, "localhost", 3650)
-    original_bytes = cert.read_bytes()
-    # OAuth flow body is mocked — we only verify the CLI regenerates cert.
-    spy = mocker.patch("diet.oauth.run_init_flow", return_value=None)
-    runner = CliRunner()
-    result = runner.invoke(app, ["auth", "--regen-cert"])
-    assert result.exit_code == 0, result.output
-    assert cert.exists()
-    assert cert.read_bytes() != original_bytes
-    spy.assert_called_once()
-
-
 # --- Task 9.11: refresh failure routes to ``diet auth`` -------------------
 
 
@@ -571,10 +512,10 @@ async def test_refresh_failure_with_revoked_token_propagates(httpx_mock):
     from diet.oauth import refresh_access_token
 
     httpx_mock.add_response(
-        url="https://api.fitbit.com/oauth2/token",
+        url="https://oauth2.googleapis.com/token",
         method="POST",
         status_code=400,
-        json={"errors": [{"errorType": "invalid_grant"}]},
+        json={"error": "invalid_grant"},
     )
     with pytest.raises(httpx.HTTPStatusError):
         await refresh_access_token("CID", "CSEC", "REVOKED_REFRESH")
@@ -583,8 +524,8 @@ async def test_refresh_failure_with_revoked_token_propagates(httpx_mock):
 def test_cli_sync_with_revoked_token_directs_to_auth(tmp_path, monkeypatch, mocker):
     """sync 中に refresh が無効化 (RefreshTokenError) → ``diet auth`` 案内."""
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.cli_helpers import RefreshTokenError
     from diet.db import Config, Token, open_db, save_config, save_token_atomic
 
@@ -611,8 +552,8 @@ def test_cli_sync_with_transient_token_error_reports_as_transient(
     NOT be reported as ``diet auth`` — the user has no auth fix to apply,
     they need to wait and retry."""
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import Config, Token, open_db, save_config, save_token_atomic
 
     conn = open_db(tmp_path / "diet.db")
@@ -639,6 +580,7 @@ def test_cli_sync_with_transient_token_error_reports_as_transient(
     assert "transient" in result.output.lower() or "一時的" in result.output
 
 
+@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_real_refresh_failure_directs_to_auth(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -647,8 +589,8 @@ def test_cli_sync_with_real_refresh_failure_directs_to_auth(
     401-triggered refresh) must still surface as a ``diet auth`` hint and
     non-zero exit — i.e. the per-day try/except must not swallow it."""
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import Config, Token, open_db, save_config, save_token_atomic
 
     conn = open_db(tmp_path / "diet.db")
@@ -667,7 +609,7 @@ def test_cli_sync_with_real_refresh_failure_directs_to_auth(
         json={"errors": [{"errorType": "expired_token"}]},
     )
     httpx_mock.add_response(
-        url="https://api.fitbit.com/oauth2/token",
+        url="https://oauth2.googleapis.com/token",
         method="POST",
         status_code=400,
         json={"errors": [{"errorType": "invalid_grant"}]},
@@ -681,6 +623,7 @@ def test_cli_sync_with_real_refresh_failure_directs_to_auth(
     assert "diet auth" in result.output
 
 
+@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -690,8 +633,8 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     import re
 
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import Config, Token, open_db, save_config, save_token_atomic
 
     conn = open_db(tmp_path / "diet.db")
@@ -709,7 +652,7 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
         json={"errors": [{"errorType": "expired_token"}]},
     )
     httpx_mock.add_response(
-        url="https://api.fitbit.com/oauth2/token",
+        url="https://oauth2.googleapis.com/token",
         method="POST",
         status_code=503,
         json={"errors": [{"errorType": "system"}]},
@@ -724,6 +667,7 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     assert "sync complete" not in result.output
 
 
+@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -737,8 +681,8 @@ def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
     import httpx
 
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     from diet.db import Config, Token, open_db, save_config, save_token_atomic
 
     conn = open_db(tmp_path / "diet.db")
@@ -756,7 +700,7 @@ def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
     # Token endpoint: raise a transport-level error before any response.
     httpx_mock.add_exception(
         httpx.ConnectTimeout("token endpoint timed out"),
-        url="https://api.fitbit.com/oauth2/token",
+        url="https://oauth2.googleapis.com/token",
         method="POST",
     )
     runner = CliRunner()

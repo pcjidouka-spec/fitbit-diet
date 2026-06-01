@@ -5,8 +5,8 @@ from diet.cli import app
 
 def test_init_writes_config_and_runs_oauth_and_sync(tmp_path, monkeypatch, mocker):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     oauth_spy = mocker.patch("diet.oauth.run_init_flow", return_value=None)
     sync_spy = mocker.patch("diet.cli._run_initial_sync", return_value=None)
     runner = CliRunner()
@@ -28,8 +28,8 @@ def test_init_writes_config_and_runs_oauth_and_sync(tmp_path, monkeypatch, mocke
 
 def test_init_baseline_skip_with_enter(tmp_path, monkeypatch, mocker):
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     mocker.patch("diet.oauth.run_init_flow", return_value=None)
     mocker.patch("diet.cli._run_initial_sync", return_value=None)
     runner = CliRunner()

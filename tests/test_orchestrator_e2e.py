@@ -38,8 +38,8 @@ def setup_db(tmp_path):
 def test_orchestrator_complete_day_no_publish(setup_db, monkeypatch, mocker):
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     target = date(2026, 5, 25)
     upsert_daily_activity(
         conn, target, steps=8234, distance_km=5.3,
@@ -60,8 +60,8 @@ def test_orchestrator_complete_day_no_publish(setup_db, monkeypatch, mocker):
 def test_orchestrator_skip_intake_uses_avg(setup_db, monkeypatch, mocker):
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     target = date(2026, 5, 25)
     # 14 days of complete-day history with =2000
     for i in range(1, 15):
@@ -93,8 +93,8 @@ def test_orchestrator_offline_sync_failure_tolerated(setup_db, monkeypatch, mock
     """Fitbit sync が例外でも食事入力には進む"""
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     target = date(2026, 5, 25)
     upsert_daily_weight(conn, target, 71.2)
     mocker.patch(
@@ -116,8 +116,8 @@ def test_orchestrator_widens_sync_window_for_past_date(setup_db, monkeypatch, mo
     from zoneinfo import ZoneInfo
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     today_real = datetime.now(ZoneInfo("Asia/Tokyo")).date()
     target = today_real - timedelta(days=20)
     upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
@@ -138,8 +138,8 @@ def test_orchestrator_publish_failure_raises(setup_db, monkeypatch, mocker):
     import click as _click
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     target = date(2026, 5, 25)
     upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
     upsert_daily_weight(conn, target, 71.2)
@@ -161,8 +161,8 @@ def test_orchestrator_rejects_negative_intake(setup_db, monkeypatch, mocker):
     import click as _click
     tmp_path, conn = setup_db
     monkeypatch.setenv("DIET_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("FITBIT_CLIENT_ID", "CID")
-    monkeypatch.setenv("FITBIT_CLIENT_SECRET", "CSEC")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "CID")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "CSEC")
     target = date(2026, 5, 25)
     upsert_daily_activity(conn, target, 8000, 5.0, 250, 300)
     upsert_daily_weight(conn, target, 71.2)

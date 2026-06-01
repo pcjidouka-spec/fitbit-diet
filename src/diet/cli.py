@@ -6,7 +6,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from diet.db import open_db, save_config, Config
 
-# Load .env at CLI import time so FITBIT_CLIENT_ID / FITBIT_CLIENT_SECRET
+# Load .env at CLI import time so GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 # (and any other env-driven config) are available throughout the process.
 # usecwd=True ensures we find the user's .env in the directory where they
 # invoke `diet`, not the one next to cli.py in site-packages.
@@ -84,11 +84,10 @@ def _run_initial_sync(conn, days: int) -> None:
 
 @app.command()
 @click.option("--port", default=8765, type=click.IntRange(min=1, max=65535))
-@click.option("--regen-cert", is_flag=True, help="証明書を再生成 (期限切れ時)")
-def auth(port: int, regen_cert: bool) -> None:
-    """Re-run OAuth (without re-prompting profile)."""
+def auth(port: int) -> None:
+    """Re-run Google OAuth (without re-prompting profile)."""
     from diet.db import load_config
-    from diet.oauth import generate_self_signed_cert, run_init_flow
+    from diet.oauth import run_init_flow
 
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -97,12 +96,6 @@ def auth(port: int, regen_cert: bool) -> None:
         raise click.ClickException(
             "config が未初期化です。先に `diet init` を実行してください。"
         )
-    if regen_cert:
-        cert = data_dir / "oauth_cert.pem"
-        key = data_dir / "oauth_key.pem"
-        cert.unlink(missing_ok=True)
-        key.unlink(missing_ok=True)
-        generate_self_signed_cert(cert, key, "localhost", days_valid=3650)
     run_init_flow(data_dir=data_dir, port=port, conn=conn)
 
 
