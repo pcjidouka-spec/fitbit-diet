@@ -83,6 +83,30 @@ async def test_weight_log_returns_newest_sample_per_day(httpx_mock):
     assert out == [{"date": "2026-05-25", "weight_kg": 71.2}]
 
 
+async def test_weight_log_mixed_tz_samples_same_day_no_crash(httpx_mock):
+    # One civil day with TWO samples: A has an aware physicalTime, B has NO
+    # physicalTime at all (civilTime only). The recency keys must never compare
+    # a tz-aware datetime against a naive one (TypeError), which the per-day
+    # except in run_sync would silently swallow and drop the day's weight.
+    httpx_mock.add_response(
+        url=re.compile(r".*/users/me/dataTypes/weight/dataPoints.*"), method="GET",
+        json={"dataPoints": [
+            {"weight": {  # A: real (aware) timestamp -> should win
+                "weightGrams": 71200,
+                "sampleTime": {"civilTime": {"date": {"year": 2026, "month": 5, "day": 25}},
+                               "physicalTime": "2026-05-25T07:30:00+09:00"},
+            }},
+            {"weight": {  # B: no physicalTime, fallback only
+                "weightGrams": 71900,
+                "sampleTime": {"civilTime": {"date": {"year": 2026, "month": 5, "day": 25}}},
+            }},
+        ]},
+    )
+    client = GoogleHealthClient(access_token="A1")
+    out = await client.get_weight_log(D)
+    assert out == [{"date": "2026-05-25", "weight_kg": 71.2}]
+
+
 async def test_401_triggers_one_refresh(httpx_mock):
     url = f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp"
     httpx_mock.add_response(url=url, method="POST", status_code=401, json={})

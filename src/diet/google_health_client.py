@@ -1,8 +1,12 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
 BASE = "https://health.googleapis.com/v4"
+
+# Recency key for samples missing/unparseable physicalTime. Aware (UTC) so it
+# never collides with parsed aware timestamps; minimal so it never wins.
+EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 class GoogleHealthClient:
@@ -97,13 +101,20 @@ class GoogleHealthClient:
                     local = date(civ["year"], civ["month"], civ["day"]).isoformat()
                 else:
                     local = d.isoformat()
-                # Deterministic recency key: parse physicalTime, fall back to
-                # min datetime when missing/unparseable so it never wins.
+                # Deterministic recency key, always tz-aware (normalised to
+                # UTC) so naive and aware timestamps never collide in `>`.
+                # physicalTime may be absent or RFC3339 without an offset.
                 phys = sample_time.get("physicalTime")
                 try:
-                    sort_key = datetime.fromisoformat(phys) if phys else datetime.min
+                    parsed = datetime.fromisoformat(phys) if phys else None
                 except ValueError:
-                    sort_key = datetime.min
+                    parsed = None
+                if parsed is None:
+                    sort_key = EPOCH
+                elif parsed.tzinfo is None:
+                    sort_key = parsed.replace(tzinfo=timezone.utc)
+                else:
+                    sort_key = parsed
                 weight_kg = round(grams / 1000.0, 2)
                 prev = newest.get(local)
                 if prev is None or sort_key > prev[0]:
