@@ -46,6 +46,7 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / P
 | Google Health API 移行 (コード) | ✅ **実装完了** (9 commit, 159 tests, spec rev 10) | — |
 | Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 の E2E チェックリスト実行 |
 | PR / merge | PR #1 作成済み・**マージ保留** | ライブ E2E 通過後に main へ merge |
+| ローカル Web UI (毎日フロー) | 🧠 **brainstorm 中** (Section 1+2 承認, Section 3 + spec 未) | 次回: Section 3 → spec 作成 → writing-plans。詳細は § 4 (2026-06-02) |
 
 ---
 
@@ -62,6 +63,21 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / P
 ---
 
 ## 4. セッションサマリー
+
+### 2026-06-02 — ローカル Web UI brainstorm（毎日フローのブラウザ化、中断中）
+
+**経緯**: 「CLI 対話フローをダッシュボードに組み込めないか」から brainstorm 開始。利用場所を確認 → **自宅 PC のみ**に確定（スマホ案は秘匿境界の都合で却下）。スコープ = **毎日の全フロー**（sync→運動/体重表示→食事入力→収支→publish）をブラウザで完結。
+
+**承認済み設計（Section 1+2）**:
+- **PC ローカル FastAPI サーバ（`127.0.0.1` のみ）+ 素の HTML/JS + Chart.js ローカル同梱**。既存 Python モジュール（db/google_health_client/publish/bmr/intake）を薄くラップ。`diet serve` 追加、CLI は併存。
+- `orchestrator.py` の計算ロジックと click 対話 I/O を分離（Web/CLI 共用の純関数へ）。新規: `src/diet/web/{app.py,service.py,static/}`。
+- API: `GET /api/day`・`/api/history`、`POST /api/sync`・`/api/intake`・`/api/weight`・`/api/publish`、`GET /api/auth/status`。当日状態 DTO 中心。
+- **秘匿**: 食事 kcal/note は localhost ブラウザにのみ返す。publish は従来 `build_records_from_db`（5 フィールド allowlist）不変＝境界テスト有効。
+- **OAuth (`diet auth`) は v1 では CLI 据え置き**（別ポート callback で複雑なため）。誤入力削除 `DELETE /api/intake/{id}` は MVP 外。
+
+**次回**: Section 3（秘匿/エラー/テスト + **移行ライブ E2E との順序**）提示 → 承認 → spec 作成（`docs/superpowers/specs/`）→ spec review → writing-plans。※ Web UI の sync は未検証の Google Health 連携に依存するので、移行 E2E との前後関係を Section 3 で決める。
+
+**運用学び**: ultracode の長い処理は **background 実行 + 各ステップ 1 行進捗報告 + タスクリスト更新**を既定に（前面・無音・長尺だと進捗不明で放置が起きる）。監視は `/workflows`・`Ctrl+O`(トランスクリプト)・`Ctrl+T`(タスクパネル)、割り込みは `Esc`。
 
 ### 2026-06-01 — Google Health API 移行 実装完了 (PR #1)
 
@@ -84,32 +100,17 @@ GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージ�
 - `.env`: `GOOGLE_CLIENT_ID/SECRET` に
 - README + plan + spec の登録手順を全面書き直し
 
-### 2026-05-25 — 全 Phase 完了 (159 tests, dashboard 公開)
-
-**Spec rev 1→9 / Plan rev 1→5** いずれも codex 4 ラウンドで clean GO 取得 (`docs/superpowers/`)
-
-**実装** (`feat/fitbit-diet-cli` ブランチ, commit `6576035..d1014cf`)
-- Phase 0: scaffold (uv + click + pytest) ✅
-- Phase 1: bmr.py / intake.py 純粋関数 (7-case decision、=0 断食保護) ✅
-- Phase 2: db.py SQLite (atomic token rotation、note 構造的隔離) ✅
-- Phase 3: oauth.py (自己署名証明書、HTTPS callback、token exchange/refresh) ✅
-- Phase 4: fitbit_client.py (rate limit 追跡、401 自動 refresh) ✅
-- Phase 5: publish.py (DTO + JSON schema 2 段 validate + boundary test、note 漏洩構造的不可) ✅
-- Phase 6: 8 CLI コマンド (init/sync/calibrate/weight/baseline/show/auth/default) ✅
-- Phase 7: orchestrator + formatters (5 ステップ対話 + 7 label 表示) ✅
-- Phase 8: HPasaneel dashboard (recharts client + server page + ナビ) ✅ → push 済み
-- Phase 9: 11 エッジケース統合テスト (sync 失敗 / weight fallback / rev N / 429 / 並列 token / cold start / dirty repo / push 失敗 / cert regen / refresh 失敗) ✅
-- Phase 10.1: README ✅
-
-**最終状態**: `py -m uv run pytest -q` → **159 passed**。GitHub push 済み。
-
 ---
 
 ## 5. 次回セッションのアジェンダ
 
-### 再開タイミング: ユーザーが GCP セットアップを行える時（コードは完成済み）
+次回は独立した 2 トラック。どちらからでも可。
 
-### ライブ E2E 検証（PR #1 マージのブロッカー）
+### トラック A: ローカル Web UI brainstorm 再開（GCP 不要・いつでも可）
+
+中断地点 = **Section 3**（秘匿/エラー/テスト + 移行 E2E との順序）から。承認済み設計は § 4 (2026-06-02)。Section 3 → spec 作成 → spec review → writing-plans → 実装。
+
+### トラック B: ライブ E2E 検証（PR #1 マージのブロッカー・GCP 認証情報が必要）
 
 詳細手順は `docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md`。要点:
 
