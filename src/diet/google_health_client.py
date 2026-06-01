@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
 
@@ -75,7 +75,10 @@ class GoogleHealthClient:
             f'AND weight.sample_time.civil_time < "{nxt.isoformat()}T00:00:00"'
         )
         url = f"{BASE}/users/me/dataTypes/weight/dataPoints"
-        out: list[dict] = []
+        # Accumulate across pages, then reduce to the newest sample per civil
+        # date. A day can have multiple measurements; keep the one with the
+        # latest physicalTime so the value fed downstream (e.g. BMR) is current.
+        newest: dict[str, tuple] = {}  # local_date -> (sort_key, weight_kg)
         page_token = None
         while True:
             params = {"filter": flt, "pageSize": 1000}
@@ -88,13 +91,24 @@ class GoogleHealthClient:
                 grams = w.get("weightGrams")
                 if grams is None:
                     continue
-                civ = (w.get("sampleTime", {}).get("civilTime", {}) or {}).get("date", {})
+                sample_time = w.get("sampleTime", {}) or {}
+                civ = (sample_time.get("civilTime", {}) or {}).get("date", {})
                 if civ:
                     local = date(civ["year"], civ["month"], civ["day"]).isoformat()
                 else:
                     local = d.isoformat()
-                out.append({"date": local, "weight_kg": round(grams / 1000.0, 2)})
+                # Deterministic recency key: parse physicalTime, fall back to
+                # min datetime when missing/unparseable so it never wins.
+                phys = sample_time.get("physicalTime")
+                try:
+                    sort_key = datetime.fromisoformat(phys) if phys else datetime.min
+                except ValueError:
+                    sort_key = datetime.min
+                weight_kg = round(grams / 1000.0, 2)
+                prev = newest.get(local)
+                if prev is None or sort_key > prev[0]:
+                    newest[local] = (sort_key, weight_kg)
             page_token = body.get("nextPageToken")
             if not page_token:
                 break
-        return out
+        return [{"date": k, "weight_kg": v[1]} for k, v in newest.items()]

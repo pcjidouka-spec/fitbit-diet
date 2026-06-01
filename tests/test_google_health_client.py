@@ -59,6 +59,30 @@ async def test_weight_log_grams_to_kg_and_local_date(httpx_mock):
     assert out == [{"date": "2026-05-25", "weight_kg": 71.2}]
 
 
+async def test_weight_log_returns_newest_sample_per_day(httpx_mock):
+    # Two samples on the same civil day; the OLDER one is listed LAST so a
+    # naive last-wins would pick the wrong (older) value. Expect the NEWEST
+    # (highest physicalTime) sample only, as a single entry.
+    httpx_mock.add_response(
+        url=re.compile(r".*/users/me/dataTypes/weight/dataPoints.*"), method="GET",
+        json={"dataPoints": [
+            {"weight": {  # newest measurement, listed first
+                "weightGrams": 71200,
+                "sampleTime": {"civilTime": {"date": {"year": 2026, "month": 5, "day": 25}},
+                               "physicalTime": "2026-05-25T07:30:00+09:00"},
+            }},
+            {"weight": {  # older measurement, listed last
+                "weightGrams": 71900,
+                "sampleTime": {"civilTime": {"date": {"year": 2026, "month": 5, "day": 25}},
+                               "physicalTime": "2026-05-25T06:00:00+09:00"},
+            }},
+        ]},
+    )
+    client = GoogleHealthClient(access_token="A1")
+    out = await client.get_weight_log(D)
+    assert out == [{"date": "2026-05-25", "weight_kg": 71.2}]
+
+
 async def test_401_triggers_one_refresh(httpx_mock):
     url = f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp"
     httpx_mock.add_response(url=url, method="POST", status_code=401, json={})
