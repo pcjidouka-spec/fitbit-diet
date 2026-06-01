@@ -21,8 +21,8 @@ def run_daily_flow(
 ) -> None:
     """Bare ``diet`` command: 5-step interactive daily flow.
 
-    Step 1: Fitbit sync (last 7 days). Failure is non-fatal — print a warning
-            and continue so the user can still log a meal offline.
+    Step 1: Google Health sync (last 7 days). Failure is non-fatal — print a
+            warning and continue so the user can still log a meal offline.
     Step 2: Intake input. ``+N`` appends, ``=N`` overrides, Enter skips.
     Step 3: BMR via Mifflin–St Jeor using the latest weight on or before today.
     Step 4: Balance line via ``decide_intake_kcal`` + ``format_balance``.
@@ -52,13 +52,13 @@ def run_daily_flow(
     today_real = datetime.now(tz).date()
     today = target_date or today_real
 
-    # [1/5] Fitbit sync — failure tolerated.
+    # [1/5] Google Health sync — failure tolerated.
     # run_sync_async fetches the last N days *relative to today_real*, so if the
     # caller asked for an older --date we widen the window to include it (plus a
     # 1-day buffer for tz edge cases). Otherwise the requested day's activity /
     # weight could remain stale or missing.
     sync_days = max(7, (today_real - today).days + 2)
-    click.echo("[1/5 Fitbit同期] 取得中...")
+    click.echo("[1/5 Google Health同期] 運動データ取得中...")
     try:
         asyncio.run(run_sync_async(conn, days=sync_days))
     except Exception as e:

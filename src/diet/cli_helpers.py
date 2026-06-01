@@ -40,9 +40,12 @@ def _is_invalid_grant(exc: httpx.HTTPStatusError) -> bool:
     network errors with no parseable body) returns False so the caller can
     re-raise as a non-auth failure.
 
-    Fitbit returns errors in two shapes:
-      ``{"errors": [{"errorType": "invalid_grant", ...}]}``
-      ``{"error": "invalid_grant", ...}``  (OAuth2 RFC 6749)
+    The token endpoint is now Google's OAuth2 endpoint, which returns the
+    RFC-6749 shape on a dead/expired refresh token:
+      ``{"error": "invalid_grant", ...}``  (status 400)
+    The legacy ``{"errors": [{"errorType": "invalid_grant", ...}]}`` shape
+    (Fitbit-era) is retained below as a harmless fallback — Google never
+    emits it, but matching it costs nothing and guards old fixtures.
     """
     resp = exc.response
     if resp is None or resp.status_code != 400:
