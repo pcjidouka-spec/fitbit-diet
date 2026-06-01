@@ -3,11 +3,11 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `b4f49e7`（Phase 10 README + memory 同期）
-最終更新日: 2026-05-26
-GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli)
+最終同期コミット: `5fd608f`（Google Health API 移行完了 + E2E チェックリスト）
+最終更新日: 2026-06-01
+GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / PR #1
 
-★ **2026-05-26 重要: Fitbit Web API が Google Health API に移行中**。新規アプリ登録は dev.fitbit.com で停止、Google Cloud Console 経由に。古い Fitbit API は 2026-09 まで動くが、私たちは登録できない。**5 月末（2026-05-31 頃）の Google Health API 正式リリース後に移行作業**を行う方針で 1 週間保留。詳細は § 3 と § 5。
+★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, 159 tests green, PR #1）。Google Health API は GA 済み（2026-03-24 ローンチ）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（一部の Google レスポンスのフィールド名が ASSUMED で adapter に隔離済み、実 API で要確認）。次のアクションは § 5、ASSUMED 項目は § 3。
 
 ---
 
@@ -29,6 +29,12 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli)
 | OAuth callback | HTTPS 必須 → 自己署名証明書 + `https://localhost:8765/callback` | 2026-05-25 |
 | codex review | 各 commit 直後に `codex review --commit <SHA>` 自動実行 | 2026-05-25 |
 | 実装方式 | superpowers:subagent-driven-development（implementer + 必要に応じて review） | 2026-05-25 |
+| **API 移行 (spec rev 10)** | Fitbit Web API → **Google Health API v4**（base `health.googleapis.com/v4`） | 2026-06-01 |
+| 運動カロリー source | **active-energy-burned 固定**（BMR-free、`marginalCalories` 後継）。total-calories は診断保存のみ＝収支に不使用（BMR 二重計上回避）。calibrate は参照表示のみ | 2026-06-01 |
+| OAuth | Google OAuth 2.0、**HTTP loopback callback**（自己署名証明書削除、`cryptography` 依存除去）、creds in body、refresh carry-forward、user_id は `/users/me/identity` から | 2026-06-01 |
+| 同意画面 | **Production に publish 必須**（Testing だと refresh token 7 日失効）。単一ユーザー <100 でセキュリティレビュー不要 | 2026-06-01 |
+| 旧 token 移行 | Fitbit token は転送不可 → v1→v2 migration で破棄し `diet auth` 再認証（体重/BMR 履歴は保全） | 2026-06-01 |
+| DB 列改名 | `daily_activity`: `marginal_kcal→active_energy_kcal`, `logged_activities_kcal→total_calories_kcal`。token テーブル名は `fitbit_token` のまま保持 | 2026-06-01 |
 
 ---
 
@@ -37,9 +43,9 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli)
 | タスク | ステータス | 次のアクション |
 |-------|-----------|----------------|
 | Phase 0-9 + 10.1 | ✅ 完了 (全 159 tests pass、HPasaneel dashboard 公開済み) | — |
-| Phase 10.2 (手動 E2E) | ⏸ **保留** (Fitbit API → Google Health API 移行待ち、~5/31 まで) | 5 月末以降に再開、§ 5 の手順参照 |
-| Google Health API 移行 | ⏸ **保留中** (本リリース待ち) | spec rev 10 + oauth.py / fitbit_client.py の書き換え |
-| PR / merge | 未実施 | 移行完了後に main へ merge |
+| Google Health API 移行 (コード) | ✅ **実装完了** (9 commit, 159 tests, spec rev 10) | — |
+| Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 の E2E チェックリスト実行 |
+| PR / merge | PR #1 作成済み・**マージ保留** | ライブ E2E 通過後に main へ merge |
 
 ---
 
@@ -47,17 +53,23 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli)
 
 | 課題 | 優先度 | 備考 |
 |------|--------|------|
-| **Fitbit → Google Health API 移行** | **★ 高** | 旧 Fitbit Web API は 2026-09 非推奨、新規登録は既に閉鎖済み。Google Cloud Console 経由の Google Health API に置き換え必要。1 週間待って正式リリース後に着手 |
-| Renpho → Fitbit → Google Health データ経路 | 中 | Renpho 同期は Fitbit アプリ側で従来通り。Google Health API が Fitbit データを吸い上げる構造なので、データ source 経路自体は不変の見込み（要検証） |
-| OAuth redirect URI = `https://www.google.com` 推奨 | 中 | Google Cloud Console 標準は web app 型で `https://www.google.com` だが、Desktop app 型を選べば `http://localhost:8765/callback` も可。CLI 用に Desktop app 型で進める |
-| テストモード refresh token 7 日期限 | 中 | Google Health API の公開ステータスが「テスト」だと refresh token が 7 日で失効。`diet auth` を週次で再実行する運用、または publish 「本番モード」へ昇格（要 OAuth 同意審査）|
-| 計画書 plan rev5 line 655 の `has_avg` 旧コード | 低 | 実装は spec §4.5 通り fix 済み。plan ドキュメントだけ古い |
-| recharts 推移依存に moderate/high vulnerability 3 件 | 低 | d3 系の既知問題。pre-existing |
-| Phase 9 最終 commit `ce617f0` の codex review credit 不足 | 低 | 回帰テスト追加済み、内容は前 codex 指摘の直接対応 |
+| **ライブ E2E 未実施** | **★ 高** | GCP 認証情報が必要。`docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md` 参照。完了まで PR #1 はマージ不可 |
+| **ASSUMED フィールド要検証** | **★ 高** | `google_health_client.py` に隔離・コメント付き。実 API で要確認: distance rollup `meterSum`(meters)、total-calories `kcalSum`、identity `healthUserId`/`legacyUserId`、weight filter `weight.sample_time.civil_time`、rollup `value` 直キー。違えば adapter 1 行 + テスト 1 つの修正 |
+| Renpho → Google Health 体重経路 | 中 | Renpho が Google Health に体重を流すか実アカウントで要確認 |
+| recharts 依存に vulnerability 3 件 | 低 | d3 系の既知問題。pre-existing |
+| `config.exercise_calorie_source` 列 | 低 | DEPRECATED・unused（active-energy 固定化後）。schema migration 回避のため列は保持、コメント明記済み |
 
 ---
 
 ## 4. セッションサマリー
+
+### 2026-06-01 — Google Health API 移行 実装完了 (PR #1)
+
+GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージェント並列ワークフローで現行コード精読 + 公式ドキュメントから API 契約確定 → codex 第二意見 + ユーザー選択で 5 設計判断確定 → writing-plans（レビュアー承認）→ subagent-driven で 6 タスク実装（各タスク TDD + 2 段階レビュー + per-commit codex）。
+
+**成果**: 9 commit (`4a510dc..5fd608f`)、159 tests green、`feat/fitbit-diet-cli` push 済み、**PR #1 作成（マージは E2E 保留）**。oauth.py=Google OAuth2/HTTP loopback、fitbit_client.py→google_health_client.py（dailyRollUp adapter）、DB 列改名+v1→v2 migration、calibrate 参照表示化、spec rev 10+README+E2E チェックリスト、`cryptography` 依存除去。
+
+**レビューで捕捉・修正した重要バグ**: ① refresh 時 user_id が "me" に上書き（→`user_id=tok.user_id` 明示）② 体重サンプルの naive/aware datetime 比較 TypeError でその日の体重黙殺（→tz-aware UTC 正規化）③ codex P2: 同一暦日で古い体重が新値を上書き（→最新サンプル選択）。
 
 ### 2026-05-26 — Fitbit API 移行発覚 → 1 週間保留
 
@@ -91,47 +103,23 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli)
 
 **最終状態**: `py -m uv run pytest -q` → **159 passed**。GitHub push 済み。
 
-### 2026-05-07 — Migration (Cursor → Claude Code)
-
 ---
 
 ## 5. 次回セッションのアジェンダ
 
-### 再開タイミング: 2026-05-31 以降（Google Health API 正式リリース後）
+### 再開タイミング: ユーザーが GCP セットアップを行える時（コードは完成済み）
 
-### 再開手順
+### ライブ E2E 検証（PR #1 マージのブロッカー）
 
-1. **Google Health API のドキュメント確認** → エンドポイント・スコープ・OAuth 流量を spec rev 10 に反映
-   - https://developers.google.com/health-api (推測 URL、本リリース後に確定)
-   - Activity / steps / weight に該当する resource type を特定
-2. **Google Cloud Console でプロジェクト + OAuth クライアント作成**
-   - プロジェクト名: `Personal Diet CLI` 等
-   - **OAuth クライアントタイプ: Desktop app**（CLI 用、localhost callback 可）
-   - またはガイド推奨の「Web server + redirect `https://www.google.com`」で手動コード paste 方式
-   - Google Health API を「API 有効化」、スコープ追加（activity/weight 系）
-   - **テストユーザー** に自分の Gmail を追加
-3. **`.env` 更新**
-   ```
-   GOOGLE_CLIENT_ID=...
-   GOOGLE_CLIENT_SECRET=...
-   GOOGLE_REDIRECT_URI=http://localhost:8765/callback  # Desktop type
-   ```
-4. **コード移行**
-   - spec rev 10 → codex 確認 → 実装更新
-   - `oauth.py`: Google OAuth URL に書き換え、refresh token 7 日警告ロジック追加
-   - `fitbit_client.py`: Google Health API endpoint・JSON 構造に対応
-   - `cli_helpers.py` の sync ロジックを新 endpoint で書き直し
-   - 既存テスト (httpx mock) を Google 用 URL に置換、boundary test は不変
-5. **`diet init`** で初回認証、`diet calibrate` → `diet` で動作確認
-6. (任意) **PR 作成 → main へ merge**
+詳細手順は `docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md`。要点:
 
-### 保留中の手動可能タスク
-
-API 待ちでもできること:
-- 体重: Renpho アプリで普通に計測してアプリ内で確認
-- 食事 kcal: メモアプリで記録、または `diet weight 71.2` / `diet baseline 2000` 等の CLI コマンドはローカルで動く（Fitbit sync 抜きでも DB に書ける）
-- 歩数: Fitbit アプリ / スマホで確認
-- これらを 1 週間続けて、API 移行後に過去日 `diet --date YYYY-MM-DD` で記録を埋める運用も可
+1. **GCP Console**: プロジェクト作成 → Google Health API 有効化 → OAuth 同意画面を **Production に publish** → テストユーザーに自分の Gmail 追加 → **Web application** OAuth クライアント作成 → redirect `http://localhost:8765/callback` 登録 → `.env` に `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI` 記入
+2. `py -m uv run diet auth` → ブラウザで認可（証明書警告なし）→ token 保存確認
+3. `py -m uv run diet sync --days 3` → `data/diet.db` 確認（steps/active_energy/distance 入る、weight が 1000 倍でない＝grams→kg 正常）
+4. **★ ASSUMED フィールドを実応答で確認**（§3）— 違えば adapter 1 行 + テスト 1 つ修正
+5. Renpho 体重が Google Health に出るか確認
+6. `py -m uv run diet` → HPasaneel publish → dashboard 確認、note/kcal 非漏洩確認
+7. すべて OK → PR #1 を main へ merge
 
 ---
 
