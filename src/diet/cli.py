@@ -102,7 +102,7 @@ def auth(port: int) -> None:
 @app.command()
 @click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
 def show(date_str: str | None) -> None:
-    """Display-only mode (no Fitbit sync, no publish)."""
+    """Display-only mode (no Google Health sync, no publish)."""
     from datetime import date as _date, datetime
     from zoneinfo import ZoneInfo
 
@@ -178,7 +178,7 @@ def calibrate(days: int) -> None:
 @app.command()
 @click.option("--days", default=7, type=click.IntRange(min=1))
 def sync(days: int) -> None:
-    """Fetch Fitbit activity + weight for the last N days."""
+    """Fetch Google Health activity + weight for the last N days."""
     import asyncio
 
     import httpx
@@ -209,7 +209,7 @@ def sync(days: int) -> None:
         # raw exception still hit this branch.
         click.echo(f"sync failed (transient): {e}", err=True)
         click.echo(
-            "Fitbit 側の一時的な障害の可能性があります。"
+            "Google Health 側の一時的な障害の可能性があります。"
             "時間をおいて再試行してください。",
             err=True,
         )

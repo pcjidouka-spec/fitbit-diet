@@ -281,26 +281,25 @@ def test_unrelated_commit_with_iso_date_does_not_inflate_rev(tmp_path):
 # --- Task 9.5: 429 rate limit reset_seconds -------------------------------
 
 
-@pytest.mark.skip(reason="rewritten in Task 3")
-async def test_429_reset_seconds_in_state(httpx_mock):
-    """Edge-case re-confirmation of 429 propagation: rate_limit.reset_seconds
-    must reflect the ``Fitbit-Rate-Limit-Reset`` header even when the request
-    fails. Already exercised by test_fitbit_client_rate_limit; kept here for
-    the Phase 9 integration suite."""
+async def test_429_raises_resource_exhausted(httpx_mock):
+    """Edge-case re-confirmation of 429 propagation against the Google Health
+    client: a RESOURCE_EXHAUSTED response on the steps dailyRollUp endpoint
+    must surface as an ``httpx.HTTPStatusError`` (not be swallowed)."""
+    import datetime as _dt
+
     import httpx
 
-    from diet.fitbit_client import FitbitClient
+    from diet.google_health_client import GoogleHealthClient, BASE
 
     httpx_mock.add_response(
-        url="https://api.fitbit.com/1/user/-/activities/date/2026-05-25.json",
+        url=f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp",
+        method="POST",
         status_code=429,
-        headers={"Fitbit-Rate-Limit-Reset": "600"},
-        json={},
+        json={"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}},
     )
-    client = FitbitClient(access_token="A")
+    client = GoogleHealthClient(access_token="A")
     with pytest.raises(httpx.HTTPStatusError):
-        await client.get_activity_summary("2026-05-25")
-    assert client.rate_limit.reset_seconds == 600
+        await client.get_daily_steps(_dt.date(2026, 5, 25))
 
 
 # --- Task 9.6: concurrent token refresh safety ----------------------------
@@ -580,7 +579,6 @@ def test_cli_sync_with_transient_token_error_reports_as_transient(
     assert "transient" in result.output.lower() or "一時的" in result.output
 
 
-@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_real_refresh_failure_directs_to_auth(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -604,15 +602,16 @@ def test_cli_sync_with_real_refresh_failure_directs_to_auth(
 
     # First per-day API call → 401 (token stale). Triggers refresh → 400.
     httpx_mock.add_response(
-        url=re.compile(r"https://api\.fitbit\.com/1/user/-/activities/date/.*\.json"),
+        url=re.compile(r".*/users/me/dataTypes/steps/dataPoints:dailyRollUp"),
+        method="POST",
         status_code=401,
-        json={"errors": [{"errorType": "expired_token"}]},
+        json={},
     )
     httpx_mock.add_response(
         url="https://oauth2.googleapis.com/token",
         method="POST",
         status_code=400,
-        json={"errors": [{"errorType": "invalid_grant"}]},
+        json={"error": "invalid_grant"},
     )
 
     runner = CliRunner()
@@ -623,7 +622,6 @@ def test_cli_sync_with_real_refresh_failure_directs_to_auth(
     assert "diet auth" in result.output
 
 
-@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -647,9 +645,10 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     # First day API call → 401 → triggers refresh. Token endpoint returns
     # 503 (transient outage, NOT invalid_grant).
     httpx_mock.add_response(
-        url=re.compile(r"https://api\.fitbit\.com/1/user/-/activities/date/.*\.json"),
+        url=re.compile(r".*/users/me/dataTypes/steps/dataPoints:dailyRollUp"),
+        method="POST",
         status_code=401,
-        json={"errors": [{"errorType": "expired_token"}]},
+        json={},
     )
     httpx_mock.add_response(
         url="https://oauth2.googleapis.com/token",
@@ -667,7 +666,6 @@ def test_cli_sync_with_real_transient_token_failure_does_not_misdirect(
     assert "sync complete" not in result.output
 
 
-@pytest.mark.skip(reason="rewritten in Task 3")
 def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
     tmp_path, monkeypatch, httpx_mock
 ):
@@ -693,9 +691,10 @@ def test_cli_sync_with_refresh_network_failure_does_not_misdirect(
     save_token_atomic(conn, Token("STALE", "R", datetime(2030, 1, 1), "UID"))
 
     httpx_mock.add_response(
-        url=re.compile(r"https://api\.fitbit\.com/1/user/-/activities/date/.*\.json"),
+        url=re.compile(r".*/users/me/dataTypes/steps/dataPoints:dailyRollUp"),
+        method="POST",
         status_code=401,
-        json={"errors": [{"errorType": "expired_token"}]},
+        json={},
     )
     # Token endpoint: raise a transport-level error before any response.
     httpx_mock.add_exception(
