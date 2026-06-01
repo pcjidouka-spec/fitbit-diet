@@ -70,7 +70,7 @@ def init(port: int) -> None:
     run_init_flow(data_dir=data_dir, port=port, conn=conn)
     _run_initial_sync(conn, days=30)
     click.echo(
-        "初期 sync 完了。`diet calibrate` で exercise_calorie_source を決めてください。"
+        "初期 sync 完了。`diet calibrate` で直近の活動カロリーを確認できます。"
     )
 
 
@@ -169,7 +169,7 @@ def weight(kg: float, date_str: str | None) -> None:
 @app.command()
 @click.option("--days", default=14, type=click.IntRange(min=1))
 def calibrate(days: int) -> None:
-    """Show recent Fitbit calorie candidates and select exercise_calorie_source."""
+    """Show recent activity-calorie figures (informational)."""
     from diet.calibrate import run_calibrate
 
     run_calibrate(_data_dir(), days=days)

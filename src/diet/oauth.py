@@ -138,11 +138,14 @@ def run_init_flow(data_dir: Path, port: int, conn) -> None:
     client_id = os.environ["GOOGLE_CLIENT_ID"]
     client_secret = os.environ["GOOGLE_CLIENT_SECRET"]
     redirect = os.environ.get("GOOGLE_REDIRECT_URI", f"http://localhost:{port}/callback")
+    # The loopback listener must bind the SAME port the redirect advertises, so
+    # a custom GOOGLE_REDIRECT_URI with a non-default port cannot diverge from --port.
+    listen_port = urllib.parse.urlparse(redirect).port or port
     state = secrets.token_urlsafe(16)
     url = build_authorization_url(client_id, redirect, SCOPES, state)
     print(f"ブラウザを開いて以下の URL にアクセスし、Google アカウントで認可してください:\n{url}")
     webbrowser.open(url)
-    cb = run_callback_server(port=port)
+    cb = run_callback_server(port=listen_port)
     if cb.error or not cb.code or cb.state != state:
         raise RuntimeError(f"OAuth failed: error={cb.error}, state mismatch?")
     tok = asyncio.run(exchange_code_for_token(client_id, client_secret, cb.code, redirect))

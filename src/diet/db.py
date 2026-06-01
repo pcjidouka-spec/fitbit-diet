@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS config (
   timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
   hpasaneel_path TEXT,
   hpasaneel_diet_root TEXT DEFAULT 'content/diet',
-  exercise_calorie_source TEXT,
+  exercise_calorie_source TEXT,  -- DEPRECATED (unused since Google Health migration; exercise source is always active_energy_kcal). Kept to avoid a schema migration.
   bootstrap_daily_kcal INTEGER
 );
 
