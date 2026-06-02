@@ -115,14 +115,36 @@ def auth_status(conn) -> dict:
     return {"authenticated": load_token(conn) is not None}
 
 
-def run_sync(conn, days: int) -> None:
-    """Pass-through to run_sync_async.
+def run_sync(conn, days: int):
+    """Pass-through to run_sync_async. Returns a SyncOutcome (synced count +
+    per-day warnings).
 
     asyncio.run() is safe here because FastAPI sync-def routes execute in a
     worker thread with no running event loop.
     """
     from diet.cli_helpers import run_sync_async
-    asyncio.run(run_sync_async(conn, days=days))
+    return asyncio.run(run_sync_async(conn, days=days))
+
+
+class PublishError(ValueError):
+    """Base for publish pre-flight failures.
+
+    Subclasses ValueError so any existing `except ValueError` still catches
+    them, while the app layer can branch on the specific subclass to return a
+    distinct stable error code (spec §3.3).
+    """
+
+
+class PublishUnconfigured(PublishError):
+    """hpasaneel_path is not configured."""
+
+
+class PublishNoData(PublishError):
+    """No publishable activity/weight for the target day."""
+
+
+class PublishBlocked(PublishError):
+    """log.json has uncommitted manual edits; resolve in the CLI first."""
 
 
 def run_publish(conn, cfg: Config, target: _date) -> None:
@@ -140,10 +162,10 @@ def run_publish(conn, cfg: Config, target: _date) -> None:
     from diet.publish import build_records_from_db, publish_to_hpasaneel
 
     if cfg.hpasaneel_path is None:
-        raise ValueError("hpasaneel_path not configured")
+        raise PublishUnconfigured("hpasaneel_path not configured")
     records = build_records_from_db(conn, [target])
     if not records:
-        raise ValueError(
+        raise PublishNoData(
             f"no publishable data for {target.isoformat()} "
             "(activity or weight missing)"
         )
@@ -154,7 +176,7 @@ def run_publish(conn, cfg: Config, target: _date) -> None:
         cwd=repo, capture_output=True, text=True, check=True,
     )
     if status.stdout.strip():
-        raise ValueError(
+        raise PublishBlocked(
             f"{rel_log} に未コミットの手動変更があります。"
             "CLI（diet）で解決してから再実行してください。"
         )

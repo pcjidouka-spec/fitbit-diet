@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,6 +14,21 @@ from diet.db import (
 )
 from diet.google_health_client import GoogleHealthClient
 from diet.oauth import refresh_access_token
+
+
+@dataclass(frozen=True)
+class SyncOutcome:
+    """Result of a sync run.
+
+    ``synced`` = number of days whose activity row was written (a day where the
+    weight fetch failed *after* the activity upsert still counts as synced).
+    ``warnings`` = one string per day that hit a per-day API failure. The web
+    layer reports a total failure only when ``synced == 0 and warnings``.
+    """
+
+    synced: int
+    days: int
+    warnings: list[str] = field(default_factory=list)
 
 
 class RefreshTokenError(Exception):
@@ -62,7 +78,15 @@ def _is_invalid_grant(exc: httpx.HTTPStatusError) -> bool:
     )
 
 
-async def run_sync_async(conn, days: int):
+async def run_sync_async(conn, days: int) -> SyncOutcome:
+    """Sync the last `days` days of activity + weight from Google Health.
+
+    Returns a ``SyncOutcome`` (synced-day count + per-day warnings). Auth-layer
+    failures (RefreshTokenError / TransientRefreshError) still raise so callers
+    can route the user; per-day API failures are collected, not raised, so one
+    bad day doesn't abort the whole window. The web layer inspects the outcome
+    to tell the browser whether the sync was clean, partial, or a total failure.
+    """
     cfg = load_config(conn)
     tok = load_token(conn)
     if tok is None:
@@ -102,8 +126,11 @@ async def run_sync_async(conn, days: int):
         return new_tok.access_token
 
     client = GoogleHealthClient(access_token=tok.access_token, on_unauthorized=refresh)
+    warnings: list[str] = []
+    synced = 0  # days whose activity row was written (even if weight later failed)
     for offset in range(days):
         d = today - timedelta(days=offset)
+        wrote_activity = False
         try:
             steps = await client.get_daily_steps(d)
             active_energy = await client.get_daily_active_energy_kcal(d)
@@ -117,6 +144,7 @@ async def run_sync_async(conn, days: int):
                 total_calories_kcal=total_calories,
                 active_energy_kcal=active_energy,
             )
+            wrote_activity = True
             weights = await client.get_weight_log(d)
             for w in weights:
                 upsert_daily_weight(
@@ -130,5 +158,12 @@ async def run_sync_async(conn, days: int):
             # so one bad day doesn't abort the whole 7-day sync.
             raise
         except Exception as e:
-            print(f"sync warning ({d}): {e}", flush=True)
-            continue
+            # A weight-fetch failure AFTER the activity upsert still counts as a
+            # synced day (activity landed) — only ``wrote_activity`` decides that,
+            # so the web layer never misreports a partial sync as a total failure.
+            msg = f"sync warning ({d}): {e}"
+            print(msg, flush=True)
+            warnings.append(msg)
+        if wrote_activity:
+            synced += 1
+    return SyncOutcome(synced=synced, days=days, warnings=warnings)
