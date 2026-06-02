@@ -32,12 +32,14 @@
 src/diet/web/
   app.py        # FastAPI アプリ定義・ルーティング・セキュリティミドルウェア
   service.py    # FastAPI 非依存の純 Python。DTO 組み立て・既存モジュール呼び出し
-  static/       # index.html / app.js / chart.umd.min.js（ローカル同梱）
+  static/       # app.js / chart.umd.min.js（純静的アセット）
+                # ※ index.html は CSRF トークン埋め込みのためルート (`GET /`) で
+                #   動的に配信し、JS/CSS/Chart.js のみ static マウントから配信する。
 ```
 
 `orchestrator.py` からの抽出方針:
 - 計算系（BMR・収支・intake 判定・past_avg）は既に `bmr` / `intake` / `formatters` / `helpers` に純関数として存在 → `service.py` はそれらを組み合わせるだけ。
-- `_parse_kcal`（intake 入力パース）を **click 非依存の純関数へ切り出し**、CLI と Web で共用（二重実装しない）。例外は `ValueError` 等の汎用例外にし、click 層 / FastAPI 層がそれぞれ翻訳する。
+- `_parse_kcal`（intake 入力パース）を **click 非依存の純関数へ切り出し**、CLI と Web で共用（二重実装しない）。**切り出し先は `intake.py`**（既存の intake 純関数群と同居）。例外は `ValueError` 等の汎用例外にし、click 層 / FastAPI 層がそれぞれ翻訳する。
 
 ### API エンドポイント
 
@@ -49,7 +51,7 @@ src/diet/web/
 | `GET`  | `/api/history`        | 過去 N 日の履歴（グラフ用） |
 | `POST` | `/api/sync`           | Google Health 同期（既存 `run_sync_async` の pass-through） |
 | `POST` | `/api/intake`         | 食事入力（`+N` 追加 / `=N` 上書き） |
-| `POST` | `/api/weight`         | 体重手動入力（任意） |
+| `POST` | `/api/weight`         | 体重手動入力（任意）。負値・0 は `400`（既存 CLI `weight` の `FloatRange(min=0.0, min_open=True)` と同じ検証） |
 | `POST` | `/api/publish`        | HPasaneel publish（既存 `build_records_from_db` 不変） |
 | `GET`  | `/api/auth/status`    | OAuth token の有効性確認 |
 
@@ -87,7 +89,7 @@ v1 で実装する防御（**フルセット**）:
 3. **mutation 時 Origin チェック** — `POST` 系は `Origin` が自オリジンと一致しなければ拒否。
 4. **permissive CORS 禁止** — CORS を一切緩めない（デフォルト same-origin のまま）。
 5. **起動毎ランダム CSRF トークン** — サーバ起動時に生成し index.html に埋め込み、mutation で検証。
-6. **`0.0.0.0` / `::` / 非ループバックホストでの起動を拒否** — `diet serve --host` 等で誤って外部公開しないよう起動時バリデーション。
+6. **`0.0.0.0` / `::` / 非ループバックホストでの起動を拒否** — `diet serve` で誤って外部公開しないよう起動時バリデーション。host は loopback 固定だが **`--port` は受け付ける**（既存 OAuth と同様にポート競合回避のため可変）。
 7. **note は `textContent` で描画**（`innerHTML` 禁止）— stored XSS 対策。
 
 ### 3.3 エラーハンドリング（Codex 反映の HTTP semantics）
