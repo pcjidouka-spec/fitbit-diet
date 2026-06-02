@@ -216,17 +216,27 @@ async function loadHistory() {
 // Form handlers
 // ---------------------------------------------------------------------------
 
+let _intakeInFlight = false;
 document.getElementById('intake-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (_intakeInFlight) return;
   const input = document.getElementById('intake-input');
   const raw = input.value.trim();
   if (!raw) return;
-  const { status, body } = await postJSON('/api/intake', { raw });
-  if (status === 200) {
-    input.value = '';
-    await loadDay();
-  } else {
-    toast('食事記録エラー: ' + (body.detail || body.code || String(status)));
+  _intakeInFlight = true;
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const { status, body } = await postJSON('/api/intake', { raw });
+    if (status === 200) {
+      input.value = '';
+      await loadDay();
+    } else {
+      toast('食事記録エラー: ' + (body.detail || body.code || String(status)));
+    }
+  } finally {
+    _intakeInFlight = false;
+    if (submitBtn) submitBtn.disabled = false;
   }
 });
 
@@ -242,6 +252,7 @@ document.getElementById('weight-form').addEventListener('submit', async (e) => {
   if (status === 200) {
     input.value = '';
     await loadDay();
+    await loadHistory();
   } else {
     toast('体重記録エラー: ' + (body.detail || body.code || String(status)));
   }
@@ -258,11 +269,14 @@ document.getElementById('sync-btn').addEventListener('click', async () => {
     const { status, body } = await postJSON('/api/sync', { days: 7 });
     if (status === 401 || body.code === 'reauth_required') {
       toast('再認証が必要です: diet auth を実行してください');
-    } else if (status >= 500 || body.ok === false) {
+    } else if (status === 409) {
+      // no_config or other pre-flight conflict
+      toast('同期エラー: ' + (body.detail || body.code || '設定を確認してください'));
+    } else if (status >= 400 || body.ok === false) {
       const warn = Array.isArray(body.warnings) ? body.warnings.join(', ') : (body.warning || body.detail || '');
       toast('同期失敗: ' + warn);
     } else {
-      // ok: true
+      // ok: true (status 200)
       const warnCount = Array.isArray(body.warnings) ? body.warnings.length : 0;
       let msg = '同期完了 (' + (body.synced || 0) + '日)';
       if (warnCount > 0) msg += ' ※警告 ' + warnCount + '件';
