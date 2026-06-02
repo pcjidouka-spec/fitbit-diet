@@ -176,6 +176,26 @@ def calibrate(days: int) -> None:
 
 
 @app.command()
+@click.option("--port", default=8770, type=click.IntRange(min=1024, max=65535))
+def serve(port: int) -> None:
+    """ローカル Web UI を 127.0.0.1 で起動（自宅 PC 専用）。
+
+    --port は >=1024 のみ（80/443 等の特権ポートは security 述語の省略ポート
+    拒否と整合しないため非対応。create_app でも同条件を二重に検証する）。
+    """
+    import uvicorn
+
+    from diet.web.app import create_app
+
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    fastapi_app = create_app(data_dir=data_dir, port=port)
+    # host は loopback 固定。外部公開を許さない（spec §3.2-6）。
+    click.echo(f"diet web UI: http://127.0.0.1:{port}  (Ctrl+C で停止)")
+    uvicorn.run(fastapi_app, host="127.0.0.1", port=port)
+
+
+@app.command()
 @click.option("--days", default=7, type=click.IntRange(min=1))
 def sync(days: int) -> None:
     """Fetch Google Health activity + weight for the last N days."""
