@@ -96,6 +96,7 @@ diet calibrate
 | `diet baseline 2200` | `bootstrap_daily_kcal` を更新（cold start 期の見直し用） |
 | `diet show [--date YYYY-MM-DD]` | 指定日の収支を表示のみ（食事入力・publish なし） |
 | `diet auth` | Google OAuth token を再取得（refresh 完全失敗時の復旧。`--port` で代替ポート指定可） |
+| `diet serve` | ローカル Web UI を `127.0.0.1` で起動（自宅 PC 専用。`--port` 既定 8770） |
 
 `diet` と `diet show` は `--date 2026-05-23` で過去日も対象にできる。
 
@@ -113,6 +114,27 @@ $ diet --date 2026-05-24
 [5/5 公開]   HPasaneel に運動・体重のみ公開しますか? [y/N]: y
 → log.json 更新 → git commit & push 完了
 ```
+
+---
+
+## ローカル Web UI（`diet serve`）
+
+CLI の毎日フローをブラウザで完結させたい場合は、自宅 PC でローカル Web サーバーを起動する。
+
+```bash
+diet serve            # http://127.0.0.1:8770 を起動（Ctrl+C で停止）
+diet serve --port 9000
+```
+
+ブラウザで `http://127.0.0.1:8770` を開くと、当日の歩数・距離・運動 kcal・体重・BMR・食事累積・収支が一画面に表示される。同期ボタン → 食事入力（`+追加` / `=上書き`）→ 体重入力 → 「HPasaneel に運動・体重のみ公開」までブラウザで完了でき、過去 30 日の体重・歩数グラフ（Chart.js、ローカル同梱・CDN 非依存）も表示される。CLI（`diet`）は従来どおり併存する。
+
+**設計上の制約（v1）**:
+- **`127.0.0.1` バインド固定**（外部公開不可）。特権ポート（80/443）は非対応で `--port` は 1024–65535。
+- 食事 kcal・メニュー名は **localhost のブラウザにのみ**返り、publish には一切出ない（CLI と同一の `build_records_from_db` 5 フィールド allowlist を経由）。
+- 悪意あるサイトからの localhost アクセス（DNS rebinding 等）対策として **Host 検証・mutation 時 Origin チェック・起動毎 CSRF トークン・loopback 強制**を実施。食事ノート等は `textContent` で描画（stored XSS 防止）。
+- **OAuth（`diet auth`）は v1 では CLI 据え置き**。token 失効・不在時は UI が「CLI で `diet auth` を実行」と促す。
+
+設計の詳細は [`docs/superpowers/specs/2026-06-03-local-web-ui-design.md`](docs/superpowers/specs/2026-06-03-local-web-ui-design.md)、実装計画は [`docs/superpowers/plans/2026-06-03-local-web-ui.md`](docs/superpowers/plans/2026-06-03-local-web-ui.md) を参照。
 
 ---
 
@@ -146,7 +168,7 @@ $ diet --date 2026-05-24
 # 依存セットアップ
 uv sync
 
-# テスト実行（159 tests）
+# テスト実行（211 tests）
 uv run pytest
 
 # 個別テスト
