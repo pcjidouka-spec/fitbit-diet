@@ -228,7 +228,7 @@ document.getElementById('intake-form').addEventListener('submit', async (e) => {
   if (submitBtn) submitBtn.disabled = true;
   try {
     const { status, body } = await postJSON('/api/intake', { raw });
-    if (status === 200) {
+    if (status >= 200 && status < 300) {
       input.value = '';
       await loadDay();
     } else {
@@ -249,7 +249,7 @@ document.getElementById('weight-form').addEventListener('submit', async (e) => {
     return;
   }
   const { status, body } = await postJSON('/api/weight', { kg: val });
-  if (status === 200) {
+  if (status >= 200 && status < 300) {
     input.value = '';
     await loadDay();
     await loadHistory();
@@ -299,7 +299,7 @@ document.getElementById('publish-btn').addEventListener('click', async () => {
   btn.textContent = '公開中…';
   try {
     const { status, body } = await postJSON('/api/publish', {});
-    if (status === 200 && body.ok) {
+    if (status >= 200 && status < 300 && body.ok) {
       toast('公開完了 (運動・体重を push しました)');
     } else {
       const code = body.code || '';
@@ -308,6 +308,7 @@ document.getElementById('publish-btn').addEventListener('click', async () => {
         publish_no_data: 'データなし',
         publish_blocked: '手動変更あり (CLIで解決してください)',
         publish_git_failed: 'git 操作失敗',
+        publish_schema_invalid: 'log.json スキーマ不正',
         publish_invalid: 'データ不正',
         publish_unconfigured: '公開先未設定',
         publish_failed: '公開失敗',

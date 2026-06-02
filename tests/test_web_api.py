@@ -239,7 +239,7 @@ def test_post_publish_schema_invalid_is_409(tmp_path, monkeypatch):
     monkeypatch.setattr("diet.web.service.run_publish", boom)
     r = client.post("/api/publish", json={}, headers=h)
     assert r.status_code == 409
-    assert r.json()["code"] == "publish_invalid"
+    assert r.json()["code"] == "publish_schema_invalid"
 
 
 def test_post_sync_days_zero_is_422(tmp_path):

@@ -188,10 +188,13 @@ def create_app(data_dir: Path, port: int) -> FastAPI:
                 return JSONResponse({"code": "publish_unconfigured", "detail": str(e)}, status_code=409)
             except jsonschema.ValidationError as e:
                 # Existing log.json is valid JSON but violates the public schema
-                # (extra field / wrong type). Recoverable → 409, not a 500.
-                return JSONResponse({"code": "publish_invalid", "detail": f"{e.message}\n  {hint}"}, status_code=409)
+                # (extra field / wrong type). Recoverable → 409. Distinct code
+                # from the generic ValueError path so a UI/log reader can tell a
+                # schema violation apart from other malformed-input failures.
+                return JSONResponse({"code": "publish_schema_invalid", "detail": f"{e.message}\n  {hint}"}, status_code=409)
             except ValueError as e:
-                # Unexpected pre-flight ValueError (e.g. malformed existing log.json).
+                # Other unexpected pre-flight ValueError (e.g. log.json that isn't
+                # valid JSON at all, surfacing from json.loads upstream).
                 return JSONResponse({"code": "publish_invalid", "detail": f"{e}\n  {hint}"}, status_code=409)
             except Exception as e:  # noqa: BLE001
                 return JSONResponse({"code": "publish_failed", "detail": f"{e}\n  {hint}"}, status_code=500)
