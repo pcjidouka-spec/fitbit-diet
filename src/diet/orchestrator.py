@@ -209,44 +209,14 @@ def run_show_only(data_dir: Path, target_date: _date) -> None:
 
 
 def _handle_intake_input(conn, target: _date, raw: str) -> None:
-    """Parse the freeform intake input line and persist as an intake_event.
-
-    Accepted forms:
-      - ``""`` → skip
-      - ``"+N"`` → append N kcal (N >= 1)
-      - ``"=N"`` → override total to N kcal (N >= 0; also marks day complete)
-    Any other input raises ``click.ClickException``.
-
-    Negative values are rejected: ``int(\"+-500\")`` would otherwise silently
-    insert -500 kcal because the leading ``+``/``=`` is stripped before parsing.
-    """
     from diet.db import insert_intake_event
+    from diet.intake import parse_kcal
 
-    if not raw:
+    try:
+        parsed = parse_kcal(raw)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if parsed is None:
         return
     now = datetime.now()
-    if raw.startswith("+"):
-        kcal = _parse_kcal(raw, raw[1:], min_value=1)
-        insert_intake_event(conn, target, now, kcal, "append")
-    elif raw.startswith("="):
-        # =0 is valid for fasting days; negative is not.
-        kcal = _parse_kcal(raw, raw[1:], min_value=0)
-        insert_intake_event(conn, target, now, kcal, "override")
-    else:
-        raise click.ClickException(
-            f"unrecognized input: {raw!r} (+追加 or =上書き or Enter)"
-        )
-
-
-def _parse_kcal(raw: str, payload: str, *, min_value: int) -> int:
-    try:
-        kcal = int(payload)
-    except ValueError as e:
-        raise click.ClickException(
-            f"unrecognized input: {raw!r} (+N or =N の N は非負整数)"
-        ) from e
-    if kcal < min_value:
-        raise click.ClickException(
-            f"unrecognized input: {raw!r} (N は {min_value} 以上である必要があります)"
-        )
-    return kcal
+    insert_intake_event(conn, target, now, parsed.kcal, parsed.op)
