@@ -758,6 +758,12 @@ _TEMPLATE = (_HERE / "templates" / "index.html").read_text(encoding="utf-8")
 
 
 def create_app(data_dir: Path, port: int) -> FastAPI:
+    # ポート 80/443 等の特権ポートは拒否する。ブラウザはデフォルトポート
+    # (80/443) のとき Host/Origin から `:port` を省略するため、security 述語
+    # （省略ポートを拒否する）と整合せず正当なリクエストまで弾いてしまう。
+    # 本ツールは loopback 開発用なので高位ポート固定でよい（codex P2 を源流封じ）。
+    if port < 1024:
+        raise ValueError(f"port must be >= 1024 (got {port}); 80/443 unsupported")
     csrf_token = secrets.token_urlsafe(32)
     app = FastAPI()
     app.add_middleware(LocalhostSecurityMiddleware, port=port, csrf_token=csrf_token)
@@ -1281,9 +1287,13 @@ Expected: FAIL（`serve` コマンド未定義 → exit_code != 0）
 
 ```python
 @app.command()
-@click.option("--port", default=8770, type=click.IntRange(min=1, max=65535))
+@click.option("--port", default=8770, type=click.IntRange(min=1024, max=65535))
 def serve(port: int) -> None:
-    """ローカル Web UI を 127.0.0.1 で起動（自宅 PC 専用）。"""
+    """ローカル Web UI を 127.0.0.1 で起動（自宅 PC 専用）。
+
+    --port は >=1024 のみ（80/443 等の特権ポートは security 述語の省略ポート
+    拒否と整合しないため非対応。create_app でも同条件を二重に検証する）。
+    """
     import uvicorn
 
     from diet.web.app import create_app
