@@ -3,11 +3,13 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `b72193b`（ローカル Web UI 実装完了 / PR #2）
+最終同期コミット: `6b30c6c`（PR #2 を feat/fitbit-diet-cli へ merge）
 最終更新日: 2026-06-03
-GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移行, base main) / PR #2 (Web UI, base feat/fitbit-diet-cli)
+GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移行 + Web UI, base main, **マージ保留**) / PR #2 (Web UI) **MERGED**
 
-★ **2026-06-03 完了: ローカル Web UI（`diet serve`）を実装完了**（feat/local-web-ui, 13 commit, 211 tests green, PR #2）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み。**残: 自宅 PC での実ブラウザ手動確認 + sync のライブ Google Health 連携（トラック B 依存）**。詳細は § 4 (2026-06-03)。
+★ **2026-06-03 完了: ローカル Web UI（`diet serve`）実装 + PR #2 マージ済み**（feat/local-web-ui→feat/fitbit-diet-cli, 211 tests green）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み + 全 code コミット codex clean。**HTTP レベル dogfood 全 PASS**（API/セキュリティ/毎日フロー/エラーコードを実 HTTP で検証、§4 2026-06-03）。**残: 自宅 PC での実ブラウザ目視確認のみ**（Chart.js 描画・JS DOM 更新。headless ブラウザは Win app-control policy でこの環境は不可）。sync の実連携はトラック B 依存。
+
+★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, PR #1）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（ASSUMED フィールドは adapter に隔離、実 API で要確認）。ASSUMED 項目は § 3、E2E 手順は § 5 トラック B。注: PR #2 マージにより feat/fitbit-diet-cli は移行 + Web UI を両方含む（PR #1 は両方を main へ運ぶ）。
 
 ★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, PR #1）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（ASSUMED フィールドは adapter に隔離、実 API で要確認）。ASSUMED 項目は § 3、E2E 手順は § 5 トラック B。
 
@@ -47,9 +49,9 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移
 | Phase 0-9 + 10.1 | ✅ 完了 (全 159 tests pass、HPasaneel dashboard 公開済み) | — |
 | Google Health API 移行 (コード) | ✅ **実装完了** (9 commit, 159 tests, spec rev 10) | — |
 | Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 トラック B の E2E チェックリスト実行 |
-| PR #1 (Google Health 移行) | 作成済み・**マージ保留** | ライブ E2E 通過後に main へ merge |
-| ローカル Web UI (毎日フロー) | ✅ **実装完了** (13 commit, 211 tests, PR #2) | 自宅 PC で実ブラウザ手動確認 → PR #2 を feat/fitbit-diet-cli へ merge |
-| PR #2 (Web UI) | 作成済み (base=feat/fitbit-diet-cli) | 手動ブラウザ確認後に merge |
+| PR #1 (移行 + Web UI → main) | 作成済み・**マージ保留** | ライブ E2E (トラック B) 通過後に main へ merge |
+| ローカル Web UI (毎日フロー) | ✅ **完了・PR #2 マージ済み** (feat/fitbit-diet-cli に統合, 211 tests) | 自宅 PC で実ブラウザ目視確認のみ残（HTTP dogfood は済） |
+| PR #2 (Web UI) | ✅ **MERGED** (→ feat/fitbit-diet-cli) | — |
 
 ---
 
@@ -79,7 +81,9 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 
 **codex**: PR #2 の全 code コミットを review 済み＝**clean**（c69017a の P2×3+P3×1 は次コミット d6b68af で自己修正済みと確認）。再レビュー不要。
 
-**残**: ① 自宅 PC で実ブラウザ手動確認 ② sync の実 Google Health はトラック B（移行 E2E）依存。
+**QA (HTTP dogfood)**: browse.exe が Win app-control policy でブロック → 実 HTTP で全エンドポイントを dogfood（seed 済み一時 DB、CSRF/Origin/Host を実通過）。**全 PASS**: index/CSRF 注入・UI 要素 9 個・GET day/history/auth・bad Host→400・Origin/CSRF 欠如→403・intake +N/=N と bad→400・weight と 0→400・sync 無 token→401 reauth_required・days=0→422・publish(no remote)→409 publish_git_failed・不正 date→422。**未検証**: Chart.js 描画・JS DOM 更新（実機ブラウザ必須）。
+
+**PR #2 は feat/fitbit-diet-cli へ merge 済み**（local/remote の feat/local-web-ui 削除済み）。**残**: ① 自宅 PC で実ブラウザ目視 ② sync の実 Google Health はトラック B（移行 E2E）依存。
 
 ### 2026-06-02 — ローカル Web UI brainstorm（毎日フローのブラウザ化、中断中）
 
@@ -108,12 +112,11 @@ GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージ�
 
 ## 5. 次回セッションのアジェンダ
 
-### トラック A: ローカル Web UI 仕上げ（GCP 不要・実装は完了済み）
+### トラック A: ローカル Web UI（✅ 実装 + マージ + HTTP QA 完了）
 
-PR #2（`feat/local-web-ui` → `feat/fitbit-diet-cli`）。残作業:
-1. 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` を開き、sync ボタン・食事入力（`+追加`/`=上書き`）・体重入力・収支表示・履歴グラフ・publish を目視確認。
-2. 問題なければ PR #2 を `feat/fitbit-diet-cli` へ merge。
-3. ※ sync の実 Google Health 連携はトラック B 未完なので、UI 上で sync を押すと認証エラー/警告になる想定（トラック B 完了後に通る）。
+PR #2 は `feat/fitbit-diet-cli` へ merge 済み。HTTP dogfood 全 PASS（§4 2026-06-03）。**残るは目視のみ**:
+- 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` を開き、履歴グラフ（Chart.js）描画・サマリー DOM 更新・トースト表示・各ボタンの動作を目視確認（HTTP 層は検証済みなので、確認対象はブラウザ JS 描画のみ）。
+- ※ sync を押すと token 未設定なら「再認証が必要（diet auth）」表示になる想定（トラック B 完了後に実連携が通る）。
 
 ### トラック B: ライブ E2E 検証（PR #1 マージのブロッカー・GCP 認証情報が必要）
 
