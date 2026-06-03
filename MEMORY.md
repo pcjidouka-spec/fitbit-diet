@@ -77,6 +77,8 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 
 **codex 主導で修正した堅牢化**: 部分 sync 失敗の可視化(SyncOutcome)、token 失効/不在の reauth 信号、publish 失敗の細分コード(publish_no_data/blocked/git_failed/schema_invalid)、ポート解析の例外封じ込め、date クエリの 422 検証。最終統合レビュー **Ship**。
 
+**codex**: PR #2 の全 code コミットを review 済み＝**clean**（c69017a の P2×3+P3×1 は次コミット d6b68af で自己修正済みと確認）。再レビュー不要。
+
 **残**: ① 自宅 PC で実ブラウザ手動確認 ② sync の実 Google Health はトラック B（移行 E2E）依存。
 
 ### 2026-06-02 — ローカル Web UI brainstorm（毎日フローのブラウザ化、中断中）
