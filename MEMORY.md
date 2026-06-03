@@ -3,11 +3,13 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `6b30c6c`（PR #2 を feat/fitbit-diet-cli へ merge）
-最終更新日: 2026-06-03
+最終同期コミット: `fa550d4`（rollup ネストのバグ修正・live E2E）
+最終更新日: 2026-06-04
 GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移行 + Web UI, base main, **マージ保留**) / PR #2 (Web UI) **MERGED**
 
-★ **2026-06-03 完了: ローカル Web UI（`diet serve`）実装 + PR #2 マージ済み**（feat/local-web-ui→feat/fitbit-diet-cli, 211 tests green）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み + 全 code コミット codex clean。**HTTP レベル dogfood 全 PASS**（API/セキュリティ/毎日フロー/エラーコードを実 HTTP で検証、§4 2026-06-03）。**残: 自宅 PC での実ブラウザ目視確認のみ**（Chart.js 描画・JS DOM 更新。headless ブラウザは Win app-control policy でこの環境は不可）。sync の実連携はトラック B 依存。
+★ **2026-06-04 トラック B（ライブ E2E）ステップ 1〜5 検証済み**（224 tests green）。`diet auth` 成功（token/refresh/実 user_id）、`diet sync` で体重 70.5kg 正常。**ASSUMED 突合で rollup ネストの重大バグを発見・修正**（`value.<metric>`→`<camelCaseType>.<metric>`、total-calories=1538 を live 確認、`fa550d4`）。周辺バグも修正（cp932 UTF-8 `5d0d0fa`、OAuth timeout 300→600s、`diet doctor` 追加 `98a6bac`）。**残: ステップ 6（`diet` フル + publish + 秘匿境界）+ 7（PR #1→main）**。詳細は § 4 (2026-06-04)。
+
+★ **2026-06-03 完了: ローカル Web UI（`diet serve`）+ PR #2 マージ済み**（211→224 tests）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み + 全 code コミット codex clean。HTTP dogfood 全 PASS。残: 自宅 PC での実ブラウザ目視（Chart.js 描画。headless は Win app-control policy で不可）。
 
 ★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, PR #1）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（ASSUMED フィールドは adapter に隔離、実 API で要確認）。ASSUMED 項目は § 3、E2E 手順は § 5 トラック B。注: PR #2 マージにより feat/fitbit-diet-cli は移行 + Web UI を両方含む（PR #1 は両方を main へ運ぶ）。
 
@@ -59,15 +61,25 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移
 
 | 課題 | 優先度 | 備考 |
 |------|--------|------|
-| **ライブ E2E 未実施** | **★ 高** | GCP 認証情報が必要。`docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md` 参照。完了まで PR #1 はマージ不可 |
-| **ASSUMED フィールド要検証** | **★ 高** | `google_health_client.py` に隔離・コメント付き。実 API で要確認: distance rollup `meterSum`(meters)、total-calories `kcalSum`、identity `healthUserId`/`legacyUserId`、weight filter `weight.sample_time.civil_time`、rollup `value` 直キー。違えば adapter 1 行 + テスト 1 つの修正 |
-| Renpho → Google Health 体重経路 | 中 | Renpho が Google Health に体重を流すか実アカウントで要確認 |
+| **ライブ E2E** | 中 | 2026-06-04 ステップ 1〜5 検証済み。**残: ステップ 6（`diet` フル + publish + 秘匿境界）+ 7（PR #1→main）**。手順は E2E チェックリスト |
+| **ASSUMED フィールド** | 中 | 大半 CONFIRMED（rollup ネスト `<camelCaseType>.<metric>` に**修正済み** `fa550d4`、total-calories=1538 / identity / weightGrams / civil_time filter 確認）。**未確認のまま**: steps/active-energy/distance の wrapper+metric（当アカウントに該当データ無し `{}`、camelCase 推定）。歩数端末を連携できれば後日確認 |
+| Renpho → Google Health 体重経路 | ✅ 確認済み | 実体重 70.1/70.5 が Renpho→Google Health で流れている（2026-06-04） |
 | recharts 依存に vulnerability 3 件 | 低 | d3 系の既知問題。pre-existing |
 | `config.exercise_calorie_source` 列 | 低 | DEPRECATED・unused（active-energy 固定化後）。schema migration 回避のため列は保持、コメント明記済み |
 
 ---
 
 ## 4. セッションサマリー
+
+### 2026-06-04 — トラック B ライブ E2E（ステップ 1〜5）+ rollup バグ修正
+
+GCP セットアップ（ユーザー手動: Health API 有効化 / 同意画面 Production publish / Web OAuth クライアント + redirect `localhost:8765/callback`）→ `.env` 記入 → `diet doctor`（新規 preflight）で検証 → `diet auth` → `diet sync --days 3`。
+
+**最大の成果（ステップ 4）**: dailyRollUp の値ネストが ASSUMED と違い、**`rollupDataPoints[0].value.<metric>` ではなく `rollupDataPoints[0].<camelCaseType>.<metric>`**（live で `totalCalories.kcalSum`=1538 を確認）。旧実装は全活動指標を silent に 0 化する重大バグだった → `_daily_rollup_value` に wrapper_key 追加で修正（`fa550d4`）。identity 実 user_id / weightGrams→kg / weight civil_time filter も CONFIRMED。steps/active/distance は当アカウントにデータ無く（`{}`）未確認。
+
+**周辺バグ修正**: ① cp932 で日本語出力クラッシュ → `cli.py` stdout/stderr を UTF-8 化（`5d0d0fa`、cron sync 死亡を予防）② OAuth callback timeout 300→600s（未確認アプリ警告を読む間にタイムアウトし接続拒否になる UX バグ）③ `diet doctor` preflight 追加（`.env`/config/token 検証、redirect URI のポート/パス厳密化、`98a6bac`）。
+
+**環境メモ**: ポート 8765 が過去 auth の残骸 pythonw に占有され `WinError 10013` → プロセス終了で解放。**Renpho→Google Health 体重経路は実体重 70.1/70.5 で動作確認**。**残: ステップ 6（`diet` フル + HPasaneel publish + 秘匿境界目視）+ 7（PR #1→main）**。
 
 ### 2026-06-03 — ローカル Web UI 実装完了（PR #2）
 
@@ -100,31 +112,21 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 
 **運用学び**: ultracode の長い処理は **background 実行 + 各ステップ 1 行進捗報告 + タスクリスト更新**を既定に（前面・無音・長尺だと進捗不明で放置が起きる）。監視は `/workflows`・`Ctrl+O`(トランスクリプト)・`Ctrl+T`(タスクパネル)、割り込みは `Esc`。
 
-### 2026-06-01 — Google Health API 移行 実装完了 (PR #1)
-
-GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージェント並列ワークフローで現行コード精読 + 公式ドキュメントから API 契約確定 → codex 第二意見 + ユーザー選択で 5 設計判断確定 → writing-plans（レビュアー承認）→ subagent-driven で 6 タスク実装（各タスク TDD + 2 段階レビュー + per-commit codex）。
-
-**成果**: 9 commit (`4a510dc..5fd608f`)、159 tests green、`feat/fitbit-diet-cli` push 済み、**PR #1 作成（マージは E2E 保留）**。oauth.py=Google OAuth2/HTTP loopback、fitbit_client.py→google_health_client.py（dailyRollUp adapter）、DB 列改名+v1→v2 migration、calibrate 参照表示化、spec rev 10+README+E2E チェックリスト、`cryptography` 依存除去。
-
-**レビューで捕捉・修正した重要バグ**: ① refresh 時 user_id が "me" に上書き（→`user_id=tok.user_id` 明示）② 体重サンプルの naive/aware datetime 比較 TypeError でその日の体重黙殺（→tz-aware UTC 正規化）③ codex P2: 同一暦日で古い体重が新値を上書き（→最新サンプル選択）。
-
----
 
 ## 5. 次回セッションのアジェンダ
 
-> ▶ **次回はトラック B から（GCP セットアップ開始）。ユーザー確定 2026-06-03。**
+> ▶ **次回はトラック B のステップ 6 から。ステップ 1〜5 は 2026-06-04 検証済み（§4）。**
 
-### ▶ トラック B: ライブ E2E 検証【次回ここから】（PR #1 → main のブロッカー・要 GCP 認証情報）
+### ▶ トラック B: ライブ E2E 残り【次回ここから】（PR #1 → main のブロッカー）
 
-詳細手順は `docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md`。**1 の GCP Console セットアップから着手**:
+ステップ 1〜5 完了（auth/sync/ASSUMED 突合 + rollup バグ修正/Renpho 体重確認、§4 2026-06-04）。`.env` 設定済み・token 保存済み。残り:
 
-1. **GCP Console**: プロジェクト作成 → Google Health API 有効化 → OAuth 同意画面を **Production に publish** → テストユーザーに自分の Gmail（pcjidouka@gmail.com）追加 → **Web application** OAuth クライアント作成 → redirect `http://localhost:8765/callback` 登録 → `.env` に `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI` 記入。※ GCP 操作はユーザー手動。Claude は手順提示・`.env` 確認・以降の CLI 実行を支援。
-2. `py -m uv run diet auth` → ブラウザで認可（証明書警告なし）→ token 保存確認
-3. `py -m uv run diet sync --days 3` → `data/diet.db` 確認（steps/active_energy/distance 入る、weight が 1000 倍でない＝grams→kg 正常）
-4. **★ ASSUMED フィールドを実応答で確認**（§3）— 違えば adapter 1 行 + テスト 1 つ修正
-5. Renpho 体重が Google Health に出るか確認
-6. `py -m uv run diet` → HPasaneel publish → dashboard 確認、note/kcal 非漏洩確認
-7. すべて OK → PR #1 を main へ merge（移行 + Web UI が同時に main 入り）
+6. **`py -m uv run diet`**（フル対話フロー）をユーザーが自分の端末で実行 → 食事入力 → HPasaneel publish → ダッシュボード確認、**`log.json` に note/kcal が無い**こと（秘匿境界）を目視。
+   - 注: 当アカウントは歩数/活動データ無し（steps/distance/exercise=0）。publish レコードは体重中心になる（pipeline 検証が目的）。
+   - 前提: `C:/code/HPasaneel` が実在する git リポジトリであること（publish 先）。
+7. すべて OK → **PR #1 を main へ merge**（移行 + Web UI が同時に main 入り）。merge 後 spec/checklist の残ステータスを「検証済み」に更新。
+
+※ 未確認の ASSUMED（steps/active/distance の wrapper+metric）は歩数端末を Google Health に連携できれば後日確認（§3）。
 
 ### トラック A: ローカル Web UI（✅ 実装 + マージ + HTTP QA 完了・残は目視のみ）
 

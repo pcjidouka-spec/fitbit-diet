@@ -42,19 +42,27 @@ Fitbit が Web API を廃止し Google Health API へ統合する流れを受け
   - body は CivilTimeInterval（`range.start.date` / `range.end.date` = 翌日, `windowSizeDays=1`）
 - **体重（CONFIRMED key）:** `GET /users/me/dataTypes/weight/dataPoints?filter=...` → `weight.weightGrams`（グラム単位、`/1000` して kg）。同一 civil day に複数サンプルがある場合は `physicalTime` が最新のものを採用。
 
-### ⚠️ ASSUMED フィールド（live E2E で要検証 — 確定ではない）
+### ⚠️ ASSUMED フィールド → live E2E 結果（2026-06-04 検証）
 
-以下は Google 公式ドキュメントで未確認のまま実装したフィールド名・単位の **仮定**。すべて `src/diet/google_health_client.py` に隔離してあり、live API に対して確認するまで「確定」とは扱わない。
-
-| 対象 | 仮定したフィールド/単位 | 場所 |
+| 対象 | 当初の仮定 | live 結果 |
 |---|---|---|
-| distance rollup の値キー | `value.meterSum`（メートル単位）| `get_daily_distance_km` |
-| total-calories rollup の値キー | `value.kcalSum` | `get_daily_total_calories_kcal` |
-| identity レスポンス | `healthUserId` / `legacyUserId` | `fetch_user_id`（fallback `"me"` で安全側） |
-| weight filter のフィールド名 | `weight.sample_time.civil_time` | `get_weight_log` |
-| rollup の `value` が直下にキーを持つ | `points[0].value.<key>` の形 | `_daily_rollup_value` |
+| **rollup の値ネスト** | `points[0].value.<metric>` | 🔴 **誤り → 修正済み**。実際は `points[0].<camelCaseType>.<metric>`（例 `totalCalories.kcalSum`）。旧実装は全活動指標を silent に 0 化していた（commit `fa550d4`） |
+| total-calories rollup | `value.kcalSum` | ✅ **CONFIRMED** `totalCalories.kcalSum`（実値 1538 kcal） |
+| identity レスポンス | `healthUserId` / `legacyUserId` | ✅ **CONFIRMED**（実 user_id 取得、`"me"` fallback せず） |
+| weight filter フィールド | `weight.sample_time.civil_time` | ✅ **CONFIRMED**（対象日の体重を正しく取得） |
+| weight 単位 | `weightGrams` /1000 | ✅ **CONFIRMED**（70.5kg、1000 倍でない） |
+| steps `steps.countSum` | — | ⚠️ **未確認**（当アカウントに歩数データ無し。生レスポンス `{}`）。camelCase パターンから推定 |
+| active-energy `activeEnergyBurned.kcalSum` | `value.kcalSum` | ⚠️ **未確認**（活動データ無し）。同上 |
+| distance `distance.meterSum`（メートル） | `value.meterSum` | ⚠️ **未確認**（距離データ無し）。同上 |
 
-これらが実 API と食い違った場合の修正は `google_health_client.py` 内に閉じる設計。詳細な検証手順は Task 6 の live-E2E チェックリストで扱う。
+> steps / active-energy / distance は wrapper キーを camelCase 型名に修正済みだが、当アカウントが歩数計未連携のため live 値で確認できていない（`{}` 応答）。歩数を Google Health に流せる端末を連携すれば後日確認できる。修正は引き続き `google_health_client.py` 内に閉じている。
+
+### live E2E で判明した実運用バグ（移行コードの周辺、2026-06-04 修正）
+
+- **cp932 クラッシュ**（commit `5d0d0fa`）: 非コンソール出力（cron `diet sync` 等）で日本語が `UnicodeEncodeError`。`cli.py` で stdout/stderr を UTF-8 化。
+- **OAuth callback タイムアウト 300→600 秒**（oauth.py）: 初回の「未確認アプリ」警告を読む間に 5 分超でリスナーが閉じ、リダイレクトが接続拒否になる UX バグ。
+- **`diet doctor` 追加**（commit `98a6bac`）: `.env`/config/token をネットワークなしで検証する preflight。
+- 環境メモ: ポート 8765 が過去の auth 残骸プロセスに占有され `WinError 10013`。再 auth 前にプロセス終了で解放。
 
 ---
 

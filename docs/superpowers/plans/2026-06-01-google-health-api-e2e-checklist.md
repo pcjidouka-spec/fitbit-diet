@@ -1,7 +1,22 @@
 # Google Health API 移行 — Live E2E 検証チェックリスト
 
 - 作成日: 2026-06-01
-- ステータス: **code-complete, E2E-pending**
+- ステータス: **2026-06-04 ステップ 1〜5 検証済み（ステップ 6 publish + 7 merge が残）**
+
+## ★ 2026-06-04 live 検証サマリー
+
+- ステップ 1〜2（GCP / `.env` / `diet auth`）✅ token + refresh_token 保存、identity 実 user_id 取得。
+- ステップ 3（`diet sync --days 3`）✅ 体重 70.5kg（grams→kg 正常）。steps/active/distance は 0 = アカウントに該当データ無し（生レスポンス `{}` で確認、バグではない）。
+- ステップ 4（ASSUMED 突合）✅ **rollup ネストのバグを発見・修正**（`value.<metric>` ではなく `<camelCaseType>.<metric>`。`totalCalories.kcalSum`=1538 を live 確認、commit `fa550d4`）。identity / weightGrams / weight civil_time filter も CONFIRMED。steps/active/distance の wrapper+metric は当アカウントにデータ無く未確認（camelCase 推定のまま）。
+- ステップ 5（Renpho 体重）✅ 実体重（70.1/70.5）が Renpho→Google Health で流れている。
+- 周辺バグ修正: cp932 UTF-8（`5d0d0fa`）、OAuth callback timeout 300→600s、`diet doctor` 追加（`98a6bac`）。
+- 詳細は spec rev 10 の「ASSUMED → live E2E 結果」表を参照。
+
+---
+
+### （以下は当初手順。実行済み項目は上記サマリー参照）
+
+- 旧ステータス: **code-complete, E2E-pending**
 - 対象ブランチ: `feat/fitbit-diet-cli`
 - 前提: Task 1-6 のコードは実装・commit 済み（159 tests passing）。本ドキュメントは
   GCP の実認証情報（まだ未取得）が用意でき次第、人が手動で実行する live 検証手順。
