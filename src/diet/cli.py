@@ -1,10 +1,24 @@
 import os
+import sys
 from pathlib import Path
 
 import click
 from dotenv import find_dotenv, load_dotenv
 
 from diet.db import open_db, save_config, Config
+
+# Force UTF-8 on stdout/stderr. This CLI emits Japanese throughout; when output
+# is a real console Python uses the wide API and renders fine, but when it is a
+# pipe / file / cron log the streams fall back to the locale codec (cp932 on
+# Windows) and any non-ASCII char raises UnicodeEncodeError. The scheduled
+# ``diet sync`` (non-console stdout) would crash on its first Japanese warning,
+# so we reconfigure unconditionally. Guarded for streams that lack reconfigure
+# (e.g. already-wrapped test buffers).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
 
 # Load .env at CLI import time so GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 # (and any other env-driven config) are available throughout the process.
@@ -289,20 +303,20 @@ def doctor() -> None:
 
     cfg = load_config(conn)
     if cfg is None:
-        click.echo("  [FAIL] config: not initialised — run `diet init`")
+        click.echo("  [FAIL] config: not initialised - run `diet init`")
         failed.append("config")
     else:
         click.echo(f"  [ OK ] config: {cfg.sex}, height {cfg.height_cm}cm, tz {cfg.timezone}")
 
     tok = load_token(conn)
     if tok is None:
-        click.echo("  [info] token: absent — run `diet auth` to authenticate")
+        click.echo("  [info] token: absent - run `diet auth` to authenticate")
     else:
         click.echo(f"  [ OK ] token: present (user_id={tok.user_id})")
 
     if failed:
         raise click.ClickException(
-            "doctor: pre-flight failed — fix the [FAIL] items above and re-run."
+            "doctor: pre-flight failed - fix the [FAIL] items above and re-run."
         )
     click.echo("doctor: all checks passed.")
 
@@ -332,7 +346,7 @@ def sync(days: int) -> None:
             err=True,
         )
         raise click.ClickException(
-            "refresh token invalid — run `diet auth` to re-authenticate."
+            "refresh token invalid - run `diet auth` to re-authenticate."
         ) from e
     except (TransientRefreshError, httpx.HTTPStatusError) as e:
         # Token-endpoint outage / rate limit / invalid_client. The user has
