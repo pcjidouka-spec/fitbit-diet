@@ -1,4 +1,7 @@
 from datetime import date, datetime, timedelta
+
+import pytest
+
 from diet.intake import (
     IntakeEvent, recorded_sum, is_complete_day,
     DailyEvents, past_avg, SAMPLE_FLOOR,
@@ -235,3 +238,37 @@ def test_decide_partial_avg_below_floor_uses_baseline():
     )
     assert d.intake_kcal == 2200
     assert d.label == "estimated_baseline_supplement"
+
+
+# ---------------------------------------------------------------------------
+# parse_kcal tests
+# ---------------------------------------------------------------------------
+from diet.intake import parse_kcal, ParsedIntake
+
+
+def test_parse_kcal_append():
+    assert parse_kcal("+500") == ParsedIntake(kcal=500, op="append")
+
+
+def test_parse_kcal_override_zero_allowed():
+    assert parse_kcal("=0") == ParsedIntake(kcal=0, op="override")
+
+
+def test_parse_kcal_empty_is_skip():
+    assert parse_kcal("") is None
+    assert parse_kcal("   ") is None
+
+
+def test_parse_kcal_append_must_be_positive():
+    with pytest.raises(ValueError):
+        parse_kcal("+0")
+
+
+def test_parse_kcal_negative_rejected():
+    with pytest.raises(ValueError):
+        parse_kcal("+-500")
+
+
+def test_parse_kcal_garbage_rejected():
+    with pytest.raises(ValueError):
+        parse_kcal("abc")

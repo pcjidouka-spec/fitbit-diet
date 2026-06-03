@@ -64,6 +64,47 @@ class IntakeDecision:
     n_samples: int = 0
 
 
+@dataclass(frozen=True)
+class ParsedIntake:
+    kcal: int
+    op: str  # 'append' | 'override'
+
+
+def parse_kcal(raw: str) -> "ParsedIntake | None":
+    """Parse a freeform intake line into a ParsedIntake, or None for skip.
+
+    click 非依存の純関数。CLI（orchestrator）と Web（service）で共用する。
+    不正入力は ValueError を送出し、呼び出し側（click / FastAPI）が翻訳する。
+
+      - ""            → None（skip）
+      - "+N" (N>=1)   → ParsedIntake(N, "append")
+      - "=N" (N>=0)   → ParsedIntake(N, "override")
+    先頭 +/= を剥いてから int 化するため、"+-500" のような負値は弾く。
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    if s.startswith("+"):
+        return ParsedIntake(kcal=_parse_int(s, s[1:], min_value=1), op="append")
+    if s.startswith("="):
+        return ParsedIntake(kcal=_parse_int(s, s[1:], min_value=0), op="override")
+    raise ValueError(f"unrecognized input: {raw!r} (+追加 or =上書き or Enter)")
+
+
+def _parse_int(raw: str, payload: str, *, min_value: int) -> int:
+    try:
+        kcal = int(payload)
+    except ValueError as e:
+        raise ValueError(
+            f"unrecognized input: {raw!r} (+N or =N の N は非負整数)"
+        ) from e
+    if kcal < min_value:
+        raise ValueError(
+            f"unrecognized input: {raw!r} (N は {min_value} 以上である必要があります)"
+        )
+    return kcal
+
+
 def decide_intake_kcal(
     today_events: list[IntakeEvent],
     past_avg_val: float | None,

@@ -3,11 +3,13 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `5fd608f`（Google Health API 移行完了 + E2E チェックリスト）
-最終更新日: 2026-06-01
-GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / PR #1
+最終同期コミット: `b72193b`（ローカル Web UI 実装完了 / PR #2）
+最終更新日: 2026-06-03
+GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移行, base main) / PR #2 (Web UI, base feat/fitbit-diet-cli)
 
-★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, 159 tests green, PR #1）。Google Health API は GA 済み（2026-03-24 ローンチ）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（一部の Google レスポンスのフィールド名が ASSUMED で adapter に隔離済み、実 API で要確認）。次のアクションは § 5、ASSUMED 項目は § 3。
+★ **2026-06-03 完了: ローカル Web UI（`diet serve`）を実装完了**（feat/local-web-ui, 13 commit, 211 tests green, PR #2）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み。**残: 自宅 PC での実ブラウザ手動確認 + sync のライブ Google Health 連携（トラック B 依存）**。詳細は § 4 (2026-06-03)。
+
+★ **2026-06-01 完了: Fitbit Web API → Google Health API v4 移行を実装完了**（9 commit, PR #1）。コードは **code-complete・ライブ E2E pending**。**main へのマージは GCP セットアップ後のライブ E2E 検証が通るまで保留**（ASSUMED フィールドは adapter に隔離、実 API で要確認）。ASSUMED 項目は § 3、E2E 手順は § 5 トラック B。
 
 ---
 
@@ -44,9 +46,10 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / P
 |-------|-----------|----------------|
 | Phase 0-9 + 10.1 | ✅ 完了 (全 159 tests pass、HPasaneel dashboard 公開済み) | — |
 | Google Health API 移行 (コード) | ✅ **実装完了** (9 commit, 159 tests, spec rev 10) | — |
-| Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 の E2E チェックリスト実行 |
-| PR / merge | PR #1 作成済み・**マージ保留** | ライブ E2E 通過後に main へ merge |
-| ローカル Web UI (毎日フロー) | 🧠 **brainstorm 中** (Section 1+2 承認, Section 3 + spec 未) | 次回: Section 3 → spec 作成 → writing-plans。詳細は § 4 (2026-06-02) |
+| Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 トラック B の E2E チェックリスト実行 |
+| PR #1 (Google Health 移行) | 作成済み・**マージ保留** | ライブ E2E 通過後に main へ merge |
+| ローカル Web UI (毎日フロー) | ✅ **実装完了** (13 commit, 211 tests, PR #2) | 自宅 PC で実ブラウザ手動確認 → PR #2 を feat/fitbit-diet-cli へ merge |
+| PR #2 (Web UI) | 作成済み (base=feat/fitbit-diet-cli) | 手動ブラウザ確認後に merge |
 
 ---
 
@@ -63,6 +66,20 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet (feat/fitbit-diet-cli) / P
 ---
 
 ## 4. セッションサマリー
+
+### 2026-06-03 — ローカル Web UI 実装完了（PR #2）
+
+brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI 先行 / 秘匿 / localhost 防御フルセット / エラー semantics）→ spec 作成（reviewer 初回 Approved）→ writing-plans（reviewer 指摘 1 ブロッカー修正後 Approved）→ subagent-driven で 12 タスク実装。
+
+**成果**: `feat/local-web-ui` 13 commit (`a1f3deb..b72193b`)、**211 tests green**、PR #2 作成（base=feat/fitbit-diet-cli）。`diet serve` で FastAPI(`127.0.0.1`)+素HTML/JS+同梱Chart.js。新 `src/diet/web/{service,security,app}.py` + static/templates。`parse_kcal` を intake.py に切り出し CLI/Web 共用、`run_sync_async`→`SyncOutcome` 返却。
+
+**秘匿/セキュリティ**: publish は `build_records_from_db` 不変（食事 kcal/note は localhost のみ・publish 非漏洩、SQL トレーステストで実証）。Host/Origin/CSRF/loopback 防御 + 特権ポート拒否 + textContent 描画(XSS 防止)。
+
+**codex 主導で修正した堅牢化**: 部分 sync 失敗の可視化(SyncOutcome)、token 失効/不在の reauth 信号、publish 失敗の細分コード(publish_no_data/blocked/git_failed/schema_invalid)、ポート解析の例外封じ込め、date クエリの 422 検証。最終統合レビュー **Ship**。
+
+**codex**: PR #2 の全 code コミットを review 済み＝**clean**（c69017a の P2×3+P3×1 は次コミット d6b68af で自己修正済みと確認）。再レビュー不要。
+
+**残**: ① 自宅 PC で実ブラウザ手動確認 ② sync の実 Google Health はトラック B（移行 E2E）依存。
 
 ### 2026-06-02 — ローカル Web UI brainstorm（毎日フローのブラウザ化、中断中）
 
@@ -87,28 +104,16 @@ GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージ�
 
 **レビューで捕捉・修正した重要バグ**: ① refresh 時 user_id が "me" に上書き（→`user_id=tok.user_id` 明示）② 体重サンプルの naive/aware datetime 比較 TypeError でその日の体重黙殺（→tz-aware UTC 正規化）③ codex P2: 同一暦日で古い体重が新値を上書き（→最新サンプル選択）。
 
-### 2026-05-26 — Fitbit API 移行発覚 → 1 週間保留
-
-ユーザーが Fitbit dev portal で Personal アプリ登録しようとした時に「2026-09 非推奨、新規登録は Google Health API へ」の案内を発見。私たちの実装は完全に旧 API 前提だったため pivot 必要に。
-
-**判断**: Google Health API の正式リリース（~2026-05-31）まで 1 週間待機。それまでは破壊的変更が起き得るため、今着手しても再修正コストが発生する。
-
-**保留中の作業**:
-- spec rev 10: OAuth/endpoint セクションを Google Health API に置き換え
-- `oauth.py`: Google OAuth 2.0 へ書き換え（authorize/token URL、Desktop app 型 redirect、refresh token 7 日対応）
-- `fitbit_client.py`: 名前変更 + Google Health API endpoint へ
-- `.env`: `GOOGLE_CLIENT_ID/SECRET` に
-- README + plan + spec の登録手順を全面書き直し
-
 ---
 
 ## 5. 次回セッションのアジェンダ
 
-次回は独立した 2 トラック。どちらからでも可。
+### トラック A: ローカル Web UI 仕上げ（GCP 不要・実装は完了済み）
 
-### トラック A: ローカル Web UI brainstorm 再開（GCP 不要・いつでも可）
-
-中断地点 = **Section 3**（秘匿/エラー/テスト + 移行 E2E との順序）から。承認済み設計は § 4 (2026-06-02)。Section 3 → spec 作成 → spec review → writing-plans → 実装。
+PR #2（`feat/local-web-ui` → `feat/fitbit-diet-cli`）。残作業:
+1. 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` を開き、sync ボタン・食事入力（`+追加`/`=上書き`）・体重入力・収支表示・履歴グラフ・publish を目視確認。
+2. 問題なければ PR #2 を `feat/fitbit-diet-cli` へ merge。
+3. ※ sync の実 Google Health 連携はトラック B 未完なので、UI 上で sync を押すと認証エラー/警告になる想定（トラック B 完了後に通る）。
 
 ### トラック B: ライブ E2E 検証（PR #1 マージのブロッカー・GCP 認証情報が必要）
 
