@@ -11,7 +11,8 @@ D = dt.date(2026, 5, 25)
 async def test_daily_steps_rollup(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp", method="POST",
-        json={"rollupDataPoints": [{"steps": {"countSum": 8123}}]},
+        # int64 sums arrive as JSON strings (live-confirmed); int() coerces.
+        json={"rollupDataPoints": [{"steps": {"countSum": "8123"}}]},
         match_headers={"Authorization": "Bearer A1"},
     )
     client = GoogleHealthClient(access_token="A1")
@@ -37,13 +38,15 @@ async def test_daily_total_calories_rollup(httpx_mock):
     assert await client.get_daily_total_calories_kcal(D) == 1538  # rounded
 
 
-async def test_daily_distance_km_converts_meters(httpx_mock):
+async def test_daily_distance_km_converts_millimeters(httpx_mock):
+    # ★ Live-confirmed (2026-06-04): distance.millimetersSum in MILLIMETRES,
+    # arriving as a STRING. 12078318 mm = 12.078 km.
     httpx_mock.add_response(
         url=f"{BASE}/users/me/dataTypes/distance/dataPoints:dailyRollUp", method="POST",
-        json={"rollupDataPoints": [{"distance": {"meterSum": 5230}}]},
+        json={"rollupDataPoints": [{"distance": {"millimetersSum": "12078318"}}]},
     )
     client = GoogleHealthClient(access_token="A1")
-    assert await client.get_daily_distance_km(D) == 5.23
+    assert await client.get_daily_distance_km(D) == 12.078
 
 
 async def test_legacy_value_key_no_longer_read(httpx_mock):

@@ -14,13 +14,15 @@ class GoogleHealthClient:
 
     All HTTP + JSON-shape knowledge lives here so callers see plain numbers.
 
-    CONFIRMED live (2026-06-04): weight weightGrams (→/1000 kg), weight filter
-    field weight.sample_time.civil_time, identity healthUserId/legacyUserId,
-    and the rollup nesting: rollupDataPoints[0].<camelCaseType>.<metric> —
-    e.g. total-calories → totalCalories.kcalSum (NOT a generic `value` key).
-    STILL ASSUMED (account had no step/activity data to verify): the wrapper
-    keys steps / activeEnergyBurned / distance and the metrics countSum /
-    kcalSum / meterSum for those three (inferred from the confirmed pattern).
+    ALL CONFIRMED live (2026-06-04): weight weightGrams (→/1000 kg), weight
+    filter field weight.sample_time.civil_time, identity healthUserId/
+    legacyUserId, and every rollup, nested as rollupDataPoints[0].<camelCaseType>
+    .<metric> (NOT a generic `value` key):
+      - steps → steps.countSum            (int64 as STRING, e.g. "17663")
+      - active-energy-burned → activeEnergyBurned.kcalSum   (double)
+      - total-calories → totalCalories.kcalSum              (double)
+      - distance → distance.millimetersSum (int64 as STRING, MILLIMETRES → /1e6 km)
+    Note int64 sums arrive as JSON strings, doubles as numbers; callers coerce.
     """
 
     def __init__(self, access_token: str, on_unauthorized=None):
@@ -83,8 +85,11 @@ class GoogleHealthClient:
         return round(v) if v is not None else 0
 
     async def get_daily_distance_km(self, d: date) -> float:
-        v = await self._daily_rollup_value("distance", d, "distance", "meterSum")  # meterSum ASSUMED (no live data)
-        return round((v or 0) / 1000.0, 3)
+        # CONFIRMED live 2026-06-04: distance.millimetersSum (millimetres, and the
+        # int64 sum arrives as a STRING). 12078318 mm = 12.078 km. (The earlier
+        # ASSUMED meterSum/metres was wrong on both key and unit.)
+        v = await self._daily_rollup_value("distance", d, "distance", "millimetersSum")
+        return round(float(v or 0) / 1_000_000.0, 3)
 
     async def get_weight_log(self, d: date) -> list[dict]:
         """Return [{"date": "YYYY-MM-DD", "weight_kg": float}] for civil day d."""
