@@ -13,10 +13,14 @@ class GoogleHealthClient:
     """Adapter over the Google Health API v4 data endpoints.
 
     All HTTP + JSON-shape knowledge lives here so callers see plain numbers.
-    CONFIRMED field names: steps countSum, active-energy-burned kcalSum,
-    weight weightGrams. ASSUMED (verify in live E2E): distance meterSum,
-    total-calories kcalSum, weight filter field weight.sample_time.civil_time,
-    and that the rollup `value` is keyed directly (value.countSum).
+
+    CONFIRMED live (2026-06-04): weight weightGrams (→/1000 kg), weight filter
+    field weight.sample_time.civil_time, identity healthUserId/legacyUserId,
+    and the rollup nesting: rollupDataPoints[0].<camelCaseType>.<metric> —
+    e.g. total-calories → totalCalories.kcalSum (NOT a generic `value` key).
+    STILL ASSUMED (account had no step/activity data to verify): the wrapper
+    keys steps / activeEnergyBurned / distance and the metrics countSum /
+    kcalSum / meterSum for those three (inferred from the confirmed pattern).
     """
 
     def __init__(self, access_token: str, on_unauthorized=None):
@@ -47,28 +51,39 @@ class GoogleHealthClient:
             "windowSizeDays": 1,
         }
 
-    async def _daily_rollup_value(self, data_type: str, d: date, value_key: str):
+    async def _daily_rollup_value(self, data_type: str, d: date, wrapper_key: str, value_key: str):
+        """Read a single daily rollup metric.
+
+        ★ Live E2E (2026-06-04): the rollup value is NOT under a generic
+        ``value`` key. Each point nests the metric under a data-type-specific
+        camelCase wrapper, e.g. total-calories → ``{"totalCalories": {"kcalSum": ...}}``
+        (CONFIRMED against the real API). The other three wrapper keys are the
+        camelCase form of their data type (steps / activeEnergyBurned / distance);
+        this account has no step/activity data so they could not be confirmed
+        live, but they follow the same pattern as the confirmed total-calories.
+        """
         url = f"{BASE}/users/me/dataTypes/{data_type}/dataPoints:dailyRollUp"
         r = await self._request("POST", url, json=self._civil_day_body(d))
         points = r.json().get("rollupDataPoints", [])
         if not points:
             return None
-        return points[0].get("value", {}).get(value_key)
+        return points[0].get(wrapper_key, {}).get(value_key)
 
     async def get_daily_steps(self, d: date) -> int:
-        v = await self._daily_rollup_value("steps", d, "countSum")
+        v = await self._daily_rollup_value("steps", d, "steps", "countSum")
         return int(v or 0)
 
     async def get_daily_active_energy_kcal(self, d: date) -> int:
-        v = await self._daily_rollup_value("active-energy-burned", d, "kcalSum")
+        v = await self._daily_rollup_value("active-energy-burned", d, "activeEnergyBurned", "kcalSum")
         return round(v) if v is not None else 0
 
     async def get_daily_total_calories_kcal(self, d: date) -> int:
-        v = await self._daily_rollup_value("total-calories", d, "kcalSum")  # ASSUMED key
+        # CONFIRMED live 2026-06-04: rollupDataPoints[0].totalCalories.kcalSum
+        v = await self._daily_rollup_value("total-calories", d, "totalCalories", "kcalSum")
         return round(v) if v is not None else 0
 
     async def get_daily_distance_km(self, d: date) -> float:
-        v = await self._daily_rollup_value("distance", d, "meterSum")  # ASSUMED key + meters
+        v = await self._daily_rollup_value("distance", d, "distance", "meterSum")  # meterSum ASSUMED (no live data)
         return round((v or 0) / 1000.0, 3)
 
     async def get_weight_log(self, d: date) -> list[dict]:

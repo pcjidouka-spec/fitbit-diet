@@ -11,7 +11,7 @@ D = dt.date(2026, 5, 25)
 async def test_daily_steps_rollup(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp", method="POST",
-        json={"rollupDataPoints": [{"value": {"countSum": 8123}}]},
+        json={"rollupDataPoints": [{"steps": {"countSum": 8123}}]},
         match_headers={"Authorization": "Bearer A1"},
     )
     client = GoogleHealthClient(access_token="A1")
@@ -21,19 +21,41 @@ async def test_daily_steps_rollup(httpx_mock):
 async def test_daily_active_energy_rollup(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE}/users/me/dataTypes/active-energy-burned/dataPoints:dailyRollUp", method="POST",
-        json={"rollupDataPoints": [{"value": {"kcalSum": 412.7}}]},
+        json={"rollupDataPoints": [{"activeEnergyBurned": {"kcalSum": 412.7}}]},
     )
     client = GoogleHealthClient(access_token="A1")
     assert await client.get_daily_active_energy_kcal(D) == 413  # rounded
 
 
+async def test_daily_total_calories_rollup(httpx_mock):
+    # ★ Live-confirmed structure (2026-06-04): totalCalories.kcalSum, NOT value.kcalSum.
+    httpx_mock.add_response(
+        url=f"{BASE}/users/me/dataTypes/total-calories/dataPoints:dailyRollUp", method="POST",
+        json={"rollupDataPoints": [{"totalCalories": {"kcalSum": 1538.27985}}]},
+    )
+    client = GoogleHealthClient(access_token="A1")
+    assert await client.get_daily_total_calories_kcal(D) == 1538  # rounded
+
+
 async def test_daily_distance_km_converts_meters(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE}/users/me/dataTypes/distance/dataPoints:dailyRollUp", method="POST",
-        json={"rollupDataPoints": [{"value": {"meterSum": 5230}}]},
+        json={"rollupDataPoints": [{"distance": {"meterSum": 5230}}]},
     )
     client = GoogleHealthClient(access_token="A1")
     assert await client.get_daily_distance_km(D) == 5.23
+
+
+async def test_legacy_value_key_no_longer_read(httpx_mock):
+    """Regression: the old generic `value` wrapper must NOT be read anymore
+    (live API nests under the camelCase type key). A point with only `value`
+    yields 0, proving we read the type-specific wrapper."""
+    httpx_mock.add_response(
+        url=f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp", method="POST",
+        json={"rollupDataPoints": [{"value": {"countSum": 9999}}]},
+    )
+    client = GoogleHealthClient(access_token="A1")
+    assert await client.get_daily_steps(D) == 0
 
 
 async def test_empty_rollup_returns_zero(httpx_mock):
@@ -110,7 +132,7 @@ async def test_weight_log_mixed_tz_samples_same_day_no_crash(httpx_mock):
 async def test_401_triggers_one_refresh(httpx_mock):
     url = f"{BASE}/users/me/dataTypes/steps/dataPoints:dailyRollUp"
     httpx_mock.add_response(url=url, method="POST", status_code=401, json={})
-    httpx_mock.add_response(url=url, method="POST", json={"rollupDataPoints": [{"value": {"countSum": 10}}]})
+    httpx_mock.add_response(url=url, method="POST", json={"rollupDataPoints": [{"steps": {"countSum": 10}}]})
     calls = {"n": 0}
     async def refresh():
         calls["n"] += 1
