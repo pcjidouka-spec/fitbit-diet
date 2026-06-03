@@ -120,7 +120,7 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 ### 任意の残タスク（優先度低）
 
 1. **Web UI ブラウザ目視**: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視（HTTP 層は検証済み）。歩数/距離データも入ったのでグラフが見栄えする。
-2. **日次運用の定着**: 毎日 `diet`（CLI）または `diet serve`（Web）で sync→食事入力→publish。cron 化する場合は `diet sync` を Production token（refresh 7 日制限なし）で。
+2. **日次運用の定着**: 毎日 `diet`（CLI）または `diet serve`（Web）で sync→食事入力→publish。cron 化する場合は `diet sync` を Production token（refresh 7 日制限なし）で。**デスクトップに起動ショートカット作成済み**（`start-dashboard.bat`＝serve 別窓起動 + ブラウザ自動オープン、`%~dp0` で ASCII-only、`Desktop\ダイエットダッシュボード.lnk`）。
 3. （任意）init プロンプト誤入力を防ぐ検証を `diet doctor` に追加してもよい（今回 `Enter（content/diet）` を文字通り入力する事故→ config 修正済み）。
 
 > ASSUMED フィールドは全て live 確認済み（§3）。移行プロジェクトに残ブロッカーは無し。
