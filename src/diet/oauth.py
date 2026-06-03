@@ -38,10 +38,17 @@ class CallbackResult:
     error: str | None = None
 
 
-def run_callback_server(port: int = 8765, timeout_sec: int = 300) -> CallbackResult:
-    """Listen for the OAuth redirect once over plain HTTP, then shut down.
-    Google exempts http://localhost from the HTTPS-only redirect rule, so no
-    TLS certificate is needed."""
+def run_callback_server(port: int = 8765, timeout_sec: int = 600) -> CallbackResult:
+    """Listen for the OAuth redirect over plain HTTP until /callback arrives,
+    then shut down. Google exempts http://localhost from the HTTPS-only redirect
+    rule, so no TLS certificate is needed.
+
+    timeout_sec is 600s (10 min): the first-time consent involves the
+    "unverified app" warning screen which a user can spend several minutes
+    reading. A shorter window silently times out, closes the listener, and the
+    eventual redirect hits a dead port ("connection refused"). Non-/callback
+    requests (favicon etc.) return 404 without ending the wait, so the listener
+    stays up for the whole window."""
     result = CallbackResult()
     finished = threading.Event()
 
