@@ -3,11 +3,11 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `fa550d4`（rollup ネストのバグ修正・live E2E）
+最終同期コミット: `317394e`（PR #1 を main へマージ + oauth timeout）
 最終更新日: 2026-06-04
-GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移行 + Web UI, base main, **マージ保留**) / PR #2 (Web UI) **MERGED**
+GitHub: https://github.com/pcjidouka-spec/fitbit-diet / **PR #1 (Google Health 移行 + Web UI) MERGED → main** / PR #2 (Web UI) MERGED。feat ブランチ削除済み。
 
-★ **2026-06-04 トラック B（ライブ E2E）ステップ 1〜5 検証済み**（224 tests green）。`diet auth` 成功（token/refresh/実 user_id）、`diet sync` で体重 70.5kg 正常。**ASSUMED 突合で rollup ネストの重大バグを発見・修正**（`value.<metric>`→`<camelCaseType>.<metric>`、total-calories=1538 を live 確認、`fa550d4`）。周辺バグも修正（cp932 UTF-8 `5d0d0fa`、OAuth timeout 300→600s、`diet doctor` 追加 `98a6bac`）。**残: ステップ 6（`diet` フル + publish + 秘匿境界）+ 7（PR #1→main）**。詳細は § 4 (2026-06-04)。
+★ **2026-06-04 トラック B 完全完了 — 移行 + Web UI が main 入り**（main=`317394e`、224 tests green）。ステップ 1〜7 全通過: auth/sync/ASSUMED 突合（**rollup ネストの重大バグ発見・修正** `value.<metric>`→`<camelCaseType>.<metric>`、live で total-calories=1538 確認）/Renpho 体重確認/`diet` フル + HPasaneel publish + **秘匿境界 live CONFIRMED**（log.json は 5 フィールドのみ）/PR #1 を main へ merge。周辺バグも修正（cp932 UTF-8、oauth timeout 300→600s、`diet doctor` 追加）。**移行プロジェクトは実質完了**。残課題は § 3（軽微）。
 
 ★ **2026-06-03 完了: ローカル Web UI（`diet serve`）+ PR #2 マージ済み**（211→224 tests）。毎日フローをブラウザ(`127.0.0.1`)で完結。秘匿境界・localhost セキュリティはレビュー済み + 全 code コミット codex clean。HTTP dogfood 全 PASS。残: 自宅 PC での実ブラウザ目視（Chart.js 描画。headless は Win app-control policy で不可）。
 
@@ -50,9 +50,9 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet / PR #1 (Google Health 移
 |-------|-----------|----------------|
 | Phase 0-9 + 10.1 | ✅ 完了 (全 159 tests pass、HPasaneel dashboard 公開済み) | — |
 | Google Health API 移行 (コード) | ✅ **実装完了** (9 commit, 159 tests, spec rev 10) | — |
-| Phase 10.2 ライブ E2E | ⏸ **pending** (GCP 認証情報が必要) | § 5 トラック B の E2E チェックリスト実行 |
-| PR #1 (移行 + Web UI → main) | 作成済み・**マージ保留** | ライブ E2E (トラック B) 通過後に main へ merge |
-| ローカル Web UI (毎日フロー) | ✅ **完了・PR #2 マージ済み** (feat/fitbit-diet-cli に統合, 211 tests) | 自宅 PC で実ブラウザ目視確認のみ残（HTTP dogfood は済） |
+| Phase 10.2 ライブ E2E（トラック B） | ✅ **完了** (ステップ 1〜7、2026-06-04) | — |
+| PR #1 (移行 + Web UI → main) | ✅ **MERGED**（main=`317394e`、feat 削除済み） | — |
+| ローカル Web UI (毎日フロー) | ✅ **完了**（main 入り、224 tests） | 自宅 PC で実ブラウザ目視のみ残（§3、軽微） |
 | PR #2 (Web UI) | ✅ **MERGED** (→ feat/fitbit-diet-cli) | — |
 
 ---
@@ -115,22 +115,14 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 
 ## 5. 次回セッションのアジェンダ
 
-> ▶ **次回はトラック B のステップ 6 から。ステップ 1〜5 は 2026-06-04 検証済み（§4）。**
+> ▶ **移行 + Web UI は main 入り完了。大きな未着手タスクは無し。以下は任意・軽微。**
 
-### ▶ トラック B: ライブ E2E 残り【次回ここから】（PR #1 → main のブロッカー）
+### 任意の残タスク（優先度低）
 
-ステップ 1〜5 完了（auth/sync/ASSUMED 突合 + rollup バグ修正/Renpho 体重確認、§4 2026-06-04）。`.env` 設定済み・token 保存済み。残り:
-
-6. **`py -m uv run diet`**（フル対話フロー）をユーザーが自分の端末で実行 → 食事入力 → HPasaneel publish → ダッシュボード確認、**`log.json` に note/kcal が無い**こと（秘匿境界）を目視。
-   - 注: 当アカウントは歩数/活動データ無し（steps/distance/exercise=0）。publish レコードは体重中心になる（pipeline 検証が目的）。
-   - 前提: `C:/code/HPasaneel` が実在する git リポジトリであること（publish 先）。
-7. すべて OK → **PR #1 を main へ merge**（移行 + Web UI が同時に main 入り）。merge 後 spec/checklist の残ステータスを「検証済み」に更新。
-
-※ 未確認の ASSUMED（steps/active/distance の wrapper+metric）は歩数端末を Google Health に連携できれば後日確認（§3）。
-
-### トラック A: ローカル Web UI（✅ 実装 + マージ + HTTP QA 完了・残は目視のみ）
-
-PR #2 は `feat/fitbit-diet-cli` へ merge 済み。HTTP dogfood 全 PASS（§4 2026-06-03）。残: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視確認（HTTP 層は検証済み、対象はブラウザ JS 描画のみ）。トラック B 完了後は sync ボタンも実連携が通る。
+1. **未確認 ASSUMED の確認**: steps/active-energy/distance の rollup wrapper+metric（`steps.countSum` / `activeEnergyBurned.kcalSum` / `distance.meterSum`）は当アカウントに該当データが無く live 未確認。歩数端末（Pixel/Wear OS/Fitbit 等）を Google Health に連携すれば `diet sync` 後に実値で確認できる（§3）。
+2. **Web UI ブラウザ目視**: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視（HTTP 層は検証済み）。Track B 完了済みなので sync ボタンも実連携が通るはず。
+3. **日次運用の定着**: 毎日 `diet`（CLI）または `diet serve`（Web）で sync→食事入力→publish。cron 化する場合は `diet sync` を Production token（refresh 7 日制限なし）で。
+4. （任意）`config.hpasaneel_diet_root` のような init プロンプト誤入力を防ぐ軽い検証を `diet doctor` に追加してもよい（今回 `Enter（content/diet）` を文字通り入力する事故があった→ config 修正済み）。
 
 ---
 
