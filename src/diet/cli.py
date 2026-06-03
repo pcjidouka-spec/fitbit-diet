@@ -195,6 +195,118 @@ def serve(port: int) -> None:
     uvicorn.run(fastapi_app, host="127.0.0.1", port=port)
 
 
+_ENV_PLACEHOLDERS = {
+    "your-client-id.apps.googleusercontent.com",
+    "your-client-secret",
+    "your-client-id",
+    "changeme",
+    "",
+}
+
+
+def _check_redirect_uri(value: str) -> str | None:
+    """Return an error message if the URI is not a valid HTTP loopback callback.
+
+    rev 10 design (decided 2026-06-01): Google OAuth on PLAIN HTTP loopback,
+    no self-signed certs. Anything else (HTTPS, external host) will not work
+    with the current oauth.py flow.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return "GOOGLE_REDIRECT_URI: cannot be parsed as a URL"
+    if parsed.scheme != "http":
+        return "GOOGLE_REDIRECT_URI: must use http:// (loopback, not https)"
+    if parsed.hostname not in ("localhost", "127.0.0.1"):
+        return "GOOGLE_REDIRECT_URI: host must be localhost or 127.0.0.1"
+    # The callback server binds a specific port and handles the exact /callback
+    # path. A missing/non-numeric port (→ defaults to 80, while run_init_flow
+    # listens on --port) or a different path silently 404s until auth times out,
+    # so the preflight must mirror the server exactly.
+    try:
+        port = parsed.port
+    except ValueError:
+        return "GOOGLE_REDIRECT_URI: port must be numeric (e.g. :8765)"
+    if port is None:
+        return "GOOGLE_REDIRECT_URI: must include a port (e.g. http://localhost:8765/callback)"
+    if not 1 <= port <= 65535:
+        # port 0 is falsy → run_init_flow falls back to the CLI port for the
+        # listener while the browser is redirected to :0, so auth never returns.
+        return "GOOGLE_REDIRECT_URI: port must be in 1..65535"
+    if parsed.path != "/callback":
+        return "GOOGLE_REDIRECT_URI: path must be exactly /callback"
+    return None
+
+
+@app.command()
+def doctor() -> None:
+    """Pre-flight: validate .env + config + token without any network call.
+
+    Run this before `diet auth` / `diet sync` to fail fast on configuration
+    mistakes. Exit non-zero if anything required is missing or wrong.
+    """
+    from diet.db import load_config, load_token
+
+    failed: list[str] = []
+
+    def _check_env(name: str) -> None:
+        val = os.environ.get(name, "")
+        if not val:
+            click.echo(f"  [FAIL] {name}: missing (set in .env)")
+            failed.append(name)
+        elif val in _ENV_PLACEHOLDERS:
+            click.echo(f"  [FAIL] {name}: still set to placeholder value")
+            failed.append(name)
+        else:
+            click.echo(f"  [ OK ] {name}: set")
+
+    click.echo("environment:")
+    _check_env("GOOGLE_CLIENT_ID")
+    _check_env("GOOGLE_CLIENT_SECRET")
+
+    redirect = os.environ.get("GOOGLE_REDIRECT_URI", "")
+    if not redirect:
+        click.echo("  [FAIL] GOOGLE_REDIRECT_URI: missing (set in .env)")
+        failed.append("GOOGLE_REDIRECT_URI")
+    else:
+        err = _check_redirect_uri(redirect)
+        if err:
+            click.echo(f"  [FAIL] {err}")
+            failed.append("GOOGLE_REDIRECT_URI")
+        else:
+            click.echo(f"  [ OK ] GOOGLE_REDIRECT_URI: {redirect}")
+
+    click.echo("database:")
+    db_path = _data_dir() / "diet.db"
+    try:
+        conn = open_db(db_path)
+    except Exception as e:  # pragma: no cover - defensive
+        click.echo(f"  [FAIL] cannot open {db_path}: {e}")
+        raise click.ClickException("doctor: pre-flight failed")
+    click.echo(f"  [ OK ] {db_path}: openable")
+
+    cfg = load_config(conn)
+    if cfg is None:
+        click.echo("  [FAIL] config: not initialised — run `diet init`")
+        failed.append("config")
+    else:
+        click.echo(f"  [ OK ] config: {cfg.sex}, height {cfg.height_cm}cm, tz {cfg.timezone}")
+
+    tok = load_token(conn)
+    if tok is None:
+        click.echo("  [info] token: absent — run `diet auth` to authenticate")
+    else:
+        click.echo(f"  [ OK ] token: present (user_id={tok.user_id})")
+
+    if failed:
+        raise click.ClickException(
+            "doctor: pre-flight failed — fix the [FAIL] items above and re-run."
+        )
+    click.echo("doctor: all checks passed.")
+
+
 @app.command()
 @click.option("--days", default=7, type=click.IntRange(min=1))
 def sync(days: int) -> None:
