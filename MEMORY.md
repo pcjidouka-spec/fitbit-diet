@@ -3,7 +3,7 @@
 > このファイルは、セッションをまたいで引き継ぐべき情報を整理するための標準メモリーです。
 > `MEMORY_PENDING.md` に蓄積された差分を、人間またはAIがこのファイルへ統合して使います。
 
-最終同期コミット: `317394e`（PR #1 を main へマージ + oauth timeout）
+最終同期コミット: `dc81315`（distance=millimetersSum 修正・全 ASSUMED 確定）
 最終更新日: 2026-06-04
 GitHub: https://github.com/pcjidouka-spec/fitbit-diet / **PR #1 (Google Health 移行 + Web UI) MERGED → main** / PR #2 (Web UI) MERGED。feat ブランチ削除済み。
 
@@ -61,9 +61,9 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet / **PR #1 (Google Health �
 
 | 課題 | 優先度 | 備考 |
 |------|--------|------|
-| **ライブ E2E** | 中 | 2026-06-04 ステップ 1〜5 検証済み。**残: ステップ 6（`diet` フル + publish + 秘匿境界）+ 7（PR #1→main）**。手順は E2E チェックリスト |
-| **ASSUMED フィールド** | 中 | 大半 CONFIRMED（rollup ネスト `<camelCaseType>.<metric>` に**修正済み** `fa550d4`、total-calories=1538 / identity / weightGrams / civil_time filter 確認）。**未確認のまま**: steps/active-energy/distance の wrapper+metric（当アカウントに該当データ無し `{}`、camelCase 推定）。歩数端末を連携できれば後日確認 |
-| Renpho → Google Health 体重経路 | ✅ 確認済み | 実体重 70.1/70.5 が Renpho→Google Health で流れている（2026-06-04） |
+| **ライブ E2E** | ✅ 完了 | 2026-06-04 ステップ 1〜7 全通過。PR #1 main マージ済み |
+| **ASSUMED フィールド** | ✅ 全確認済み | rollup ネスト `<camelCaseType>.<metric>`、steps.countSum / activeEnergyBurned.kcalSum / totalCalories.kcalSum（int64 は文字列）、distance は **`millimetersSum`(mm)** に修正（`dc81315`、当初 meterSum/m は誤り）、weightGrams / civil_time / identity も確認。歩数端末（Fitbit）連携で全 live 確認完了 |
+| Renpho/Fitbit → Google Health 経路 | ✅ 確認済み | 体重（Renpho 70.5kg）+ 歩数/活動/距離（Fitbit 17663 歩 / 12.078km / 1933kcal）が流れている（2026-06-04） |
 | recharts 依存に vulnerability 3 件 | 低 | d3 系の既知問題。pre-existing |
 | `config.exercise_calorie_source` 列 | 低 | DEPRECATED・unused（active-energy 固定化後）。schema migration 回避のため列は保持、コメント明記済み |
 
@@ -75,7 +75,7 @@ GitHub: https://github.com/pcjidouka-spec/fitbit-diet / **PR #1 (Google Health �
 
 GCP セットアップ（ユーザー手動: Health API 有効化 / 同意画面 Production publish / Web OAuth クライアント + redirect `localhost:8765/callback`）→ `.env` 記入 → `diet doctor`（新規 preflight）で検証 → `diet auth` → `diet sync --days 3`。
 
-**最大の成果（ステップ 4）**: dailyRollUp の値ネストが ASSUMED と違い、**`rollupDataPoints[0].value.<metric>` ではなく `rollupDataPoints[0].<camelCaseType>.<metric>`**（live で `totalCalories.kcalSum`=1538 を確認）。旧実装は全活動指標を silent に 0 化する重大バグだった → `_daily_rollup_value` に wrapper_key 追加で修正（`fa550d4`）。identity 実 user_id / weightGrams→kg / weight civil_time filter も CONFIRMED。steps/active/distance は当アカウントにデータ無く（`{}`）未確認。
+**最大の成果（ステップ 4）**: dailyRollUp の値ネストが ASSUMED と違い、**`rollupDataPoints[0].value.<metric>` ではなく `rollupDataPoints[0].<camelCaseType>.<metric>`**（live で `totalCalories.kcalSum`=1538 を確認）。旧実装は全活動指標を silent に 0 化する重大バグだった → `_daily_rollup_value` に wrapper_key 追加で修正（`fa550d4`）。identity 実 user_id / weightGrams→kg / weight civil_time filter も CONFIRMED。**その後 Fitbit 歩数端末を連携 → steps=17663/active=1933 確認、さらに distance が `meterSum`(m) でなく `millimetersSum`(mm) と判明し再修正（`dc81315`、12.078km）。これで全 rollup ASSUMED 確定。** int64 系（countSum/millimetersSum）は JSON 文字列で届く点も判明。
 
 **周辺バグ修正**: ① cp932 で日本語出力クラッシュ → `cli.py` stdout/stderr を UTF-8 化（`5d0d0fa`、cron sync 死亡を予防）② OAuth callback timeout 300→600s（未確認アプリ警告を読む間にタイムアウトし接続拒否になる UX バグ）③ `diet doctor` preflight 追加（`.env`/config/token 検証、redirect URI のポート/パス厳密化、`98a6bac`）。
 
@@ -119,10 +119,11 @@ brainstorm 再開（Section 3 を codex consult 反映で承認: 独立・Web UI
 
 ### 任意の残タスク（優先度低）
 
-1. **未確認 ASSUMED の確認**: steps/active-energy/distance の rollup wrapper+metric（`steps.countSum` / `activeEnergyBurned.kcalSum` / `distance.meterSum`）は当アカウントに該当データが無く live 未確認。歩数端末（Pixel/Wear OS/Fitbit 等）を Google Health に連携すれば `diet sync` 後に実値で確認できる（§3）。
-2. **Web UI ブラウザ目視**: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視（HTTP 層は検証済み）。Track B 完了済みなので sync ボタンも実連携が通るはず。
-3. **日次運用の定着**: 毎日 `diet`（CLI）または `diet serve`（Web）で sync→食事入力→publish。cron 化する場合は `diet sync` を Production token（refresh 7 日制限なし）で。
-4. （任意）`config.hpasaneel_diet_root` のような init プロンプト誤入力を防ぐ軽い検証を `diet doctor` に追加してもよい（今回 `Enter（content/diet）` を文字通り入力する事故があった→ config 修正済み）。
+1. **Web UI ブラウザ目視**: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視（HTTP 層は検証済み）。歩数/距離データも入ったのでグラフが見栄えする。
+2. **日次運用の定着**: 毎日 `diet`（CLI）または `diet serve`（Web）で sync→食事入力→publish。cron 化する場合は `diet sync` を Production token（refresh 7 日制限なし）で。
+3. （任意）init プロンプト誤入力を防ぐ検証を `diet doctor` に追加してもよい（今回 `Enter（content/diet）` を文字通り入力する事故→ config 修正済み）。
+
+> ASSUMED フィールドは全て live 確認済み（§3）。移行プロジェクトに残ブロッカーは無し。
 
 ---
 

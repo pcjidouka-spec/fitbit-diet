@@ -51,11 +51,11 @@ Fitbit が Web API を廃止し Google Health API へ統合する流れを受け
 | identity レスポンス | `healthUserId` / `legacyUserId` | ✅ **CONFIRMED**（実 user_id 取得、`"me"` fallback せず） |
 | weight filter フィールド | `weight.sample_time.civil_time` | ✅ **CONFIRMED**（対象日の体重を正しく取得） |
 | weight 単位 | `weightGrams` /1000 | ✅ **CONFIRMED**（70.5kg、1000 倍でない） |
-| steps `steps.countSum` | — | ⚠️ **未確認**（当アカウントに歩数データ無し。生レスポンス `{}`）。camelCase パターンから推定 |
-| active-energy `activeEnergyBurned.kcalSum` | `value.kcalSum` | ⚠️ **未確認**（活動データ無し）。同上 |
-| distance `distance.meterSum`（メートル） | `value.meterSum` | ⚠️ **未確認**（距離データ無し）。同上 |
+| steps `steps.countSum` | `value.countSum` | ✅ **CONFIRMED**（Fitbit 連携後 17663 歩。int64 が **文字列** "17663" で届く→`int()` 強制） |
+| active-energy `activeEnergyBurned.kcalSum` | `value.kcalSum` | ✅ **CONFIRMED**（1933 kcal、double） |
+| distance | `value.meterSum`（メートル） | 🔴 **誤り → 修正済み**。実際は `distance.millimetersSum`（**ミリメートル**・int64 文字列）。12078318 mm = 12.078 km（17663 歩と整合）。`/1_000_000` + `float()` に修正（commit `dc81315`） |
 
-> steps / active-energy / distance は wrapper キーを camelCase 型名に修正済みだが、当アカウントが歩数計未連携のため live 値で確認できていない（`{}` 応答）。歩数を Google Health に流せる端末を連携すれば後日確認できる。修正は引き続き `google_health_client.py` 内に閉じている。
+> **全 rollup フィールド live 確認済み（2026-06-04、Fitbit 歩数端末連携後）**。要点: rollup は `<camelCaseType>.<metric>` ネスト、int64 系（countSum/millimetersSum）は **JSON 文字列**で届きcallers が coerce、kcalSum 系は数値。distance だけは当初 key/単位とも誤っていた（meterSum→millimetersSum, m→mm）。
 
 ### live E2E で判明した実運用バグ（移行コードの周辺、2026-06-04 修正）
 
