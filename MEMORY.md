@@ -112,23 +112,23 @@ GA 確認（2026-03-24 ローンチ済み）→ 移行に着手。10 エージ�
 
 ## 5. 次回セッションのアジェンダ
 
-### トラック A: ローカル Web UI（✅ 実装 + マージ + HTTP QA 完了）
+> ▶ **次回はトラック B から（GCP セットアップ開始）。ユーザー確定 2026-06-03。**
 
-PR #2 は `feat/fitbit-diet-cli` へ merge 済み。HTTP dogfood 全 PASS（§4 2026-06-03）。**残るは目視のみ**:
-- 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` を開き、履歴グラフ（Chart.js）描画・サマリー DOM 更新・トースト表示・各ボタンの動作を目視確認（HTTP 層は検証済みなので、確認対象はブラウザ JS 描画のみ）。
-- ※ sync を押すと token 未設定なら「再認証が必要（diet auth）」表示になる想定（トラック B 完了後に実連携が通る）。
+### ▶ トラック B: ライブ E2E 検証【次回ここから】（PR #1 → main のブロッカー・要 GCP 認証情報）
 
-### トラック B: ライブ E2E 検証（PR #1 マージのブロッカー・GCP 認証情報が必要）
+詳細手順は `docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md`。**1 の GCP Console セットアップから着手**:
 
-詳細手順は `docs/superpowers/plans/2026-06-01-google-health-api-e2e-checklist.md`。要点:
-
-1. **GCP Console**: プロジェクト作成 → Google Health API 有効化 → OAuth 同意画面を **Production に publish** → テストユーザーに自分の Gmail 追加 → **Web application** OAuth クライアント作成 → redirect `http://localhost:8765/callback` 登録 → `.env` に `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI` 記入
+1. **GCP Console**: プロジェクト作成 → Google Health API 有効化 → OAuth 同意画面を **Production に publish** → テストユーザーに自分の Gmail（pcjidouka@gmail.com）追加 → **Web application** OAuth クライアント作成 → redirect `http://localhost:8765/callback` 登録 → `.env` に `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI` 記入。※ GCP 操作はユーザー手動。Claude は手順提示・`.env` 確認・以降の CLI 実行を支援。
 2. `py -m uv run diet auth` → ブラウザで認可（証明書警告なし）→ token 保存確認
 3. `py -m uv run diet sync --days 3` → `data/diet.db` 確認（steps/active_energy/distance 入る、weight が 1000 倍でない＝grams→kg 正常）
 4. **★ ASSUMED フィールドを実応答で確認**（§3）— 違えば adapter 1 行 + テスト 1 つ修正
 5. Renpho 体重が Google Health に出るか確認
 6. `py -m uv run diet` → HPasaneel publish → dashboard 確認、note/kcal 非漏洩確認
-7. すべて OK → PR #1 を main へ merge
+7. すべて OK → PR #1 を main へ merge（移行 + Web UI が同時に main 入り）
+
+### トラック A: ローカル Web UI（✅ 実装 + マージ + HTTP QA 完了・残は目視のみ）
+
+PR #2 は `feat/fitbit-diet-cli` へ merge 済み。HTTP dogfood 全 PASS（§4 2026-06-03）。残: 自宅 PC で `py -m uv run diet serve` → `http://127.0.0.1:8770` で Chart.js 描画・DOM 更新・トーストを目視確認（HTTP 層は検証済み、対象はブラウザ JS 描画のみ）。トラック B 完了後は sync ボタンも実連携が通る。
 
 ---
 
