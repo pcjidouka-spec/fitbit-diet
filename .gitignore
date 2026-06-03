@@ -1,0 +1,15 @@
+MEMORY_PENDING.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# fitbit-diet specific
+data/
+.env
+*.pem
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,363 @@
+import os
+import sys
+from pathlib import Path
+
+import click
+from dotenv import find_dotenv, load_dotenv
+
+from diet.db import open_db, save_config, Config
+
+# Force UTF-8 on stdout/stderr. This CLI emits Japanese throughout; when output
+# is a real console Python uses the wide API and renders fine, but when it is a
+# pipe / file / cron log the streams fall back to the locale codec (cp932 on
+# Windows) and any non-ASCII char raises UnicodeEncodeError. The scheduled
+# ``diet sync`` (non-console stdout) would crash on its first Japanese warning,
+# so we reconfigure unconditionally. Guarded for streams that lack reconfigure
+# (e.g. already-wrapped test buffers).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+# Load .env at CLI import time so GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# (and any other env-driven config) are available throughout the process.
+# usecwd=True ensures we find the user's .env in the directory where they
+# invoke `diet`, not the one next to cli.py in site-packages.
+load_dotenv(find_dotenv(usecwd=True))
+
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("DIET_DATA_DIR", "data"))
+
+
+@click.group(invoke_without_command=True)
+@click.option("--date", "date_str", default=None, type=str, help="YYYY-MM-DD")
+@click.pass_context
+def app(ctx: click.Context, date_str: str | None) -> None:
+    """Personal diet tracking CLI."""
+    if ctx.invoked_subcommand is None:
+        # Task 6.8: default bare 'diet'
+        from datetime import date as _date
+
+        from diet.orchestrator import run_daily_flow
+
+        target = _date.fromisoformat(date_str) if date_str else None
+        run_daily_flow(data_dir=_data_dir(), target_date=target)
+
+
+@app.command()
+@click.option("--port", default=8765, type=int)
+def init(port: int) -> None:
+    """First-time setup."""
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    birthday = click.prompt(
+        "生年月日 (YYYY-MM-DD)", type=click.DateTime(formats=["%Y-%m-%d"])
+    )
+    height = click.prompt("身長 (cm)", type=int)
+    sex = click.prompt("性別 (male/female)", type=click.Choice(["male", "female"]))
+    tz = click.prompt("タイムゾーン", default="Asia/Tokyo")
+    hpath = click.prompt("HPasaneel リポジトリパス", default="C:/code/HPasaneel")
+    droot = click.prompt("HPasaneel ダッシュボードルート", default="content/diet")
+    bootstrap_in = click.prompt(
+        "普段 1 日のカロリー目安 (不明なら Enter で skip)",
+        default="",
+        show_default=False,
+    )
+    bootstrap_val = int(bootstrap_in) if bootstrap_in.strip() else None
+    cfg = Config(
+        birthday=birthday.date(),
+        height_cm=height,
+        sex=sex,
+        timezone=tz,
+        hpasaneel_path=hpath,
+        hpasaneel_diet_root=droot,
+        exercise_calorie_source=None,
+        bootstrap_daily_kcal=bootstrap_val,
+    )
+    conn = open_db(data_dir / "diet.db")
+    save_config(conn, cfg)
+    click.echo("config saved.")
+    from diet.oauth import run_init_flow
+
+    run_init_flow(data_dir=data_dir, port=port, conn=conn)
+    _run_initial_sync(conn, days=30)
+    click.echo(
+        "初期 sync 完了。`diet calibrate` で直近の活動カロリーを確認できます。"
+    )
+
+
+def _run_initial_sync(conn, days: int) -> None:
+    import asyncio
+
+    from diet.cli_helpers import run_sync_async
+
+    asyncio.run(run_sync_async(conn, days=days))
+
+
+@app.command()
+@click.option("--port", default=8765, type=click.IntRange(min=1, max=65535))
+def auth(port: int) -> None:
+    """Re-run Google OAuth (without re-prompting profile)."""
+    from diet.db import load_config
+    from diet.oauth import run_init_flow
+
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    conn = open_db(data_dir / "diet.db")
+    if load_config(conn) is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    run_init_flow(data_dir=data_dir, port=port, conn=conn)
+
+
+@app.command()
+@click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
+def show(date_str: str | None) -> None:
+    """Display-only mode (no Google Health sync, no publish)."""
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+
+    from diet.db import load_config
+    from diet.orchestrator import run_show_only
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    target = (
+        _date.fromisoformat(date_str)
+        if date_str
+        else datetime.now(ZoneInfo(cfg.timezone)).date()
+    )
+    run_show_only(_data_dir(), target)
+
+
+@app.command()
+@click.argument("kcal", type=click.IntRange(min=1))
+def baseline(kcal: int) -> None:
+    """Update bootstrap_daily_kcal."""
+    from dataclasses import replace
+
+    from diet.db import load_config, save_config
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    save_config(conn, replace(cfg, bootstrap_daily_kcal=kcal))
+    click.echo(f"baseline updated to {kcal} kcal/day")
+
+
+@app.command()
+@click.argument("kg", type=click.FloatRange(min=0.0, min_open=True))
+@click.option("--date", "date_str", default=None, help="YYYY-MM-DD (default today)")
+def weight(kg: float, date_str: str | None) -> None:
+    """Manually record a weight reading."""
+    from datetime import date as _date, datetime
+    from zoneinfo import ZoneInfo
+
+    from diet.db import load_config, upsert_daily_weight
+
+    conn = open_db(_data_dir() / "diet.db")
+    cfg = load_config(conn)
+    if cfg is None:
+        raise click.ClickException(
+            "config が未初期化です。先に `diet init` を実行してください。"
+        )
+    target = (
+        _date.fromisoformat(date_str)
+        if date_str
+        else datetime.now(ZoneInfo(cfg.timezone)).date()
+    )
+    upsert_daily_weight(conn, target, kg)
+    click.echo(f"weight {kg}kg recorded for {target}")
+
+
+@app.command()
+@click.option("--days", default=14, type=click.IntRange(min=1))
+def calibrate(days: int) -> None:
+    """Show recent activity-calorie figures (informational)."""
+    from diet.calibrate import run_calibrate
+
+    run_calibrate(_data_dir(), days=days)
+
+
+@app.command()
+@click.option("--port", default=8770, type=click.IntRange(min=1024, max=65535))
+def serve(port: int) -> None:
+    """ローカル Web UI を 127.0.0.1 で起動（自宅 PC 専用）。
+
+    --port は >=1024 のみ（80/443 等の特権ポートは security 述語の省略ポート
+    拒否と整合しないため非対応。create_app でも同条件を二重に検証する）。
+    """
+    import uvicorn
+
+    from diet.web.app import create_app
+
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    fastapi_app = create_app(data_dir=data_dir, port=port)
+    # host は loopback 固定。外部公開を許さない（spec §3.2-6）。
+    click.echo(f"diet web UI: http://127.0.0.1:{port}  (Ctrl+C で停止)")
+    uvicorn.run(fastapi_app, host="127.0.0.1", port=port)
+
+
+_ENV_PLACEHOLDERS = {
+    "your-client-id.apps.googleusercontent.com",
+    "your-client-secret",
+    "your-client-id",
+    "changeme",
+    "",
+}
+
+
+def _check_redirect_uri(value: str) -> str | None:
+    """Return an error message if the URI is not a valid HTTP loopback callback.
+
+    rev 10 design (decided 2026-06-01): Google OAuth on PLAIN HTTP loopback,
+    no self-signed certs. Anything else (HTTPS, external host) will not work
+    with the current oauth.py flow.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return "GOOGLE_REDIRECT_URI: cannot be parsed as a URL"
+    if parsed.scheme != "http":
+        return "GOOGLE_REDIRECT_URI: must use http:// (loopback, not https)"
+    if parsed.hostname not in ("localhost", "127.0.0.1"):
+        return "GOOGLE_REDIRECT_URI: host must be localhost or 127.0.0.1"
+    # The callback server binds a specific port and handles the exact /callback
+    # path. A missing/non-numeric port (→ defaults to 80, while run_init_flow
+    # listens on --port) or a different path silently 404s until auth times out,
+    # so the preflight must mirror the server exactly.
+    try:
+        port = parsed.port
+    except ValueError:
+        return "GOOGLE_REDIRECT_URI: port must be numeric (e.g. :8765)"
+    if port is None:
+        return "GOOGLE_REDIRECT_URI: must include a port (e.g. http://localhost:8765/callback)"
+    if not 1 <= port <= 65535:
+        # port 0 is falsy → run_init_flow falls back to the CLI port for the
+        # listener while the browser is redirected to :0, so auth never returns.
+        return "GOOGLE_REDIRECT_URI: port must be in 1..65535"
+    if parsed.path != "/callback":
+        return "GOOGLE_REDIRECT_URI: path must be exactly /callback"
+    return None
+
+
+@app.command()
+def doctor() -> None:
+    """Pre-flight: validate .env + config + token without any network call.
+
+    Run this before `diet auth` / `diet sync` to fail fast on configuration
+    mistakes. Exit non-zero if anything required is missing or wrong.
+    """
+    from diet.db import load_config, load_token
+
+    failed: list[str] = []
+
+    def _check_env(name: str) -> None:
+        val = os.environ.get(name, "")
+        if not val:
+            click.echo(f"  [FAIL] {name}: missing (set in .env)")
+            failed.append(name)
+        elif val in _ENV_PLACEHOLDERS:
+            click.echo(f"  [FAIL] {name}: still set to placeholder value")
+            failed.append(name)
+        else:
+            click.echo(f"  [ OK ] {name}: set")
+
+    click.echo("environment:")
+    _check_env("GOOGLE_CLIENT_ID")
+    _check_env("GOOGLE_CLIENT_SECRET")
+
+    redirect = os.environ.get("GOOGLE_REDIRECT_URI", "")
+    if not redirect:
+        click.echo("  [FAIL] GOOGLE_REDIRECT_URI: missing (set in .env)")
+        failed.append("GOOGLE_REDIRECT_URI")
+    else:
+        err = _check_redirect_uri(redirect)
+        if err:
+            click.echo(f"  [FAIL] {err}")
+            failed.append("GOOGLE_REDIRECT_URI")
+        else:
+            click.echo(f"  [ OK ] GOOGLE_REDIRECT_URI: {redirect}")
+
+    click.echo("database:")
+    db_path = _data_dir() / "diet.db"
+    try:
+        conn = open_db(db_path)
+    except Exception as e:  # pragma: no cover - defensive
+        click.echo(f"  [FAIL] cannot open {db_path}: {e}")
+        raise click.ClickException("doctor: pre-flight failed")
+    click.echo(f"  [ OK ] {db_path}: openable")
+
+    cfg = load_config(conn)
+    if cfg is None:
+        click.echo("  [FAIL] config: not initialised - run `diet init`")
+        failed.append("config")
+    else:
+        click.echo(f"  [ OK ] config: {cfg.sex}, height {cfg.height_cm}cm, tz {cfg.timezone}")
+
+    tok = load_token(conn)
+    if tok is None:
+        click.echo("  [info] token: absent - run `diet auth` to authenticate")
+    else:
+        click.echo(f"  [ OK ] token: present (user_id={tok.user_id})")
+
+    if failed:
+        raise click.ClickException(
+            "doctor: pre-flight failed - fix the [FAIL] items above and re-run."
+        )
+    click.echo("doctor: all checks passed.")
+
+
+@app.command()
+@click.option("--days", default=7, type=click.IntRange(min=1))
+def sync(days: int) -> None:
+    """Fetch Google Health activity + weight for the last N days."""
+    import asyncio
+
+    import httpx
+
+    from diet.cli_helpers import RefreshTokenError, TransientRefreshError, run_sync_async
+    from diet.db import load_token
+
+    conn = open_db(_data_dir() / "diet.db")
+    if load_token(conn) is None:
+        raise click.ClickException("Not authenticated. Run `diet init` first.")
+    try:
+        asyncio.run(run_sync_async(conn, days=days))
+    except RefreshTokenError as e:
+        # Refresh token is dead (invalid_grant). Re-auth is the only fix.
+        click.echo(f"sync failed: {e}", err=True)
+        click.echo(
+            "refresh token が無効になった可能性があります。"
+            "`diet auth` で再認証してください。",
+            err=True,
+        )
+        raise click.ClickException(
+            "refresh token invalid - run `diet auth` to re-authenticate."
+        ) from e
+    except (TransientRefreshError, httpx.HTTPStatusError) as e:
+        # Token-endpoint outage / rate limit / invalid_client. The user has
+        # no auth fix; wait and retry. ``httpx.HTTPStatusError`` is kept in
+        # the tuple so tests that mock ``run_sync_async`` directly with the
+        # raw exception still hit this branch.
+        click.echo(f"sync failed (transient): {e}", err=True)
+        click.echo(
+            "Google Health 側の一時的な障害の可能性があります。"
+            "時間をおいて再試行してください。",
+            err=True,
+        )
+        raise click.ClickException(f"sync failed (transient): {e}") from e
+    click.echo(f"sync complete ({days} days)")

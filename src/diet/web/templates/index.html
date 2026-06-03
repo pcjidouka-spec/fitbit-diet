@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{csrf_token}">
+  <title>diet — ダイエット管理</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+      margin: 0; padding: 1rem;
+      background: #f5f5f5; color: #222;
+      max-width: 720px; margin-left: auto; margin-right: auto;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    h2 { font-size: 1.1rem; margin: 1.2rem 0 0.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }
+    section { background: #fff; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    #summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin: 0; }
+    #summary dt { color: #666; font-size: 0.9rem; }
+    #summary dd { margin: 0; font-weight: 600; }
+    #balance { font-size: 1.1rem; white-space: pre-wrap; font-family: monospace; }
+    form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    input[type="text"], input[type="number"] {
+      border: 1px solid #ccc; border-radius: 4px; padding: 0.4rem 0.6rem;
+      font-size: 1rem; flex: 1; min-width: 120px;
+    }
+    button {
+      background: #3a7bd5; color: #fff; border: none; border-radius: 4px;
+      padding: 0.45rem 1rem; font-size: 0.95rem; cursor: pointer;
+    }
+    button:hover { background: #2c66c0; }
+    #sync-btn { background: #5b8dd9; }
+    #publish-btn { background: #2ecc71; }
+    #publish-btn:hover { background: #27ae60; }
+    #toast {
+      position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 0.6rem 1.2rem; border-radius: 6px;
+      font-size: 0.9rem; max-width: 90vw; white-space: pre-wrap; word-break: break-word;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 9999;
+    }
+    #toast.show { opacity: 1; }
+    canvas { max-width: 100%; }
+    .hint { color: #888; font-size: 0.8rem; margin: 0.3rem 0 0; }
+    .null-val { color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>今日のダイエット</h1>
+
+  <section>
+    <button id="sync-btn" type="button">同期（過去7日）</button>
+  </section>
+
+  <section>
+    <h2>サマリー</h2>
+    <div id="summary"><span class="null-val">読み込み中…</span></div>
+  </section>
+
+  <section>
+    <h2>食事記録</h2>
+    <form id="intake-form">
+      <input id="intake-input" type="text" placeholder="+追加 / =上書き（例: +500 , =1800）" autocomplete="off">
+      <button type="submit">記録</button>
+    </form>
+    <p class="hint">先頭が + なら加算、= なら上書き（例: +500, =1800）。</p>
+  </section>
+
+  <section>
+    <h2>体重記録</h2>
+    <form id="weight-form">
+      <input id="weight-input" type="number" step="0.1" min="20" max="300" placeholder="体重 (kg)">
+      <button type="submit">記録</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>バランス</h2>
+    <div id="balance"><span class="null-val">—</span></div>
+  </section>
+
+  <section>
+    <button id="publish-btn" type="button">公開（運動・体重のみ公開）</button>
+    <p class="hint">hpasaneel へ運動量と体重を push します。食事データは公開されません。</p>
+  </section>
+
+  <section>
+    <h2>履歴グラフ（過去30日）</h2>
+    <canvas id="history-chart" height="200"></canvas>
+  </section>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

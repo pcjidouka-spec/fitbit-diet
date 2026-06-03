@@ -1,11 +1,68 @@
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
-- 最終更新: 2026-05-25（OAuth HTTPS callback 対応, rev 9）
-- ステータス: ユーザーレビュー待ち
+- 最終更新: 2026-06-01（Google Health API 移行, rev 10）
+- ステータス: 実装済み（Google Health API 移行 Task 1-4 完了）。一部 API フィールドは live E2E 未検証。
 - スコープ: 2 リポジトリ横断
   - `C:/code/fitbit連動ダイエット` — Python CLI（本リポジトリ）
   - `C:/code/HPasaneel` — Next.js ダッシュボードページ追加
+
+> **注（rev 10）:** 本ドキュメントの「Fitbit」は **Google Health API v4** に移行済み（下記 rev 10 amendment 参照）。
+> §4 以降の本文には移行前の Fitbit 記述が残る箇所があり、本文より rev 10 amendment と実コード（`src/diet/`）が優先する。
+> リポジトリ名・テーブル名 `fitbit_token` 等は migration 回避のため歴史的名称を保持している。
+
+---
+
+## Rev 10 — Google Health API 移行（2026-06-01）
+
+Fitbit が Web API を廃止し Google Health API へ統合する流れを受け、本 CLI のデータ取得層・OAuth 層を **Google Health API v4** に全面移行した。コードは Task 1-4 で実装済み。設計判断・確定 API 契約・**未検証（ASSUMED）フィールド**を以下に記録する。
+
+### 5 つの設計判断
+
+1. **運動消費カロリー = active-energy-burned（BMR フリー、固定）。** 旧 spec の `marginalCalories` / `logged_activities` / calibrate による source 選択は廃止。Google の `active-energy-burned` は構造的に基礎代謝を含まないため、二重計上の罠（§4 で論じた問題）を恒久的に解消する。`exercise_calorie_source` config は **DEPRECATED**（未使用、schema migration 回避のため列だけ残置）。
+2. **total-calories は診断用にのみ保存（BMR 込み TDEE）、収支には絶対に使わない。** 旧 `logged_activities_kcal` 列を `total_calories_kcal` にリネームして格納。収支算出は常に `active_energy_kcal` を使う。
+3. **OAuth は標準 Google OAuth 2.0、loopback callback は PLAIN HTTP。** Google は `http://localhost` を HTTPS-only ルールから除外するため、自己署名 TLS 証明書（rev 9 で導入）は **完全に削除**。`cryptography` 依存も削除。`access_type=offline` + `prompt=consent` で refresh_token を確実に取得。client credentials は token リクエストの **body** に入れる。refresh レスポンスが refresh_token を省略した場合は **既存値を carry forward**。
+4. **calibrate は情報表示のみ。** source 選択機能を削除し、直近の活動カロリー（active-energy-burned 等）を並べて見るだけのコマンドになった。
+5. **v1（Fitbit）→ v2（Google Health）DB migration を実装。** `daily_activity` の列リネーム + 移行不能な旧 Fitbit token の wipe（§6 参照）。
+
+### 確定 API 契約（コードで実装済み・確認済み）
+
+- **OAuth endpoints**
+  - Authorization: `https://accounts.google.com/o/oauth2/v2/auth`
+  - Token: `https://oauth2.googleapis.com/token`（client_id / client_secret を body に同梱）
+  - Loopback callback: `http://localhost:8765/callback`（PLAIN HTTP、TLS 不要）
+  - Scopes:
+    - `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`
+    - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
+- **API base:** `https://health.googleapis.com/v4`
+- **user_id 解決:** `GET /users/me/identity`（失敗・想定外レスポンス時は `"me"` に fallback）
+- **日次活動データ（CONFIRMED key）:**
+  - `POST /users/me/dataTypes/steps/dataPoints:dailyRollUp` → `value.countSum`
+  - `POST /users/me/dataTypes/active-energy-burned/dataPoints:dailyRollUp` → `value.kcalSum`
+  - body は CivilTimeInterval（`range.start.date` / `range.end.date` = 翌日, `windowSizeDays=1`）
+- **体重（CONFIRMED key）:** `GET /users/me/dataTypes/weight/dataPoints?filter=...` → `weight.weightGrams`（グラム単位、`/1000` して kg）。同一 civil day に複数サンプルがある場合は `physicalTime` が最新のものを採用。
+
+### ⚠️ ASSUMED フィールド → live E2E 結果（2026-06-04 検証）
+
+| 対象 | 当初の仮定 | live 結果 |
+|---|---|---|
+| **rollup の値ネスト** | `points[0].value.<metric>` | 🔴 **誤り → 修正済み**。実際は `points[0].<camelCaseType>.<metric>`（例 `totalCalories.kcalSum`）。旧実装は全活動指標を silent に 0 化していた（commit `fa550d4`） |
+| total-calories rollup | `value.kcalSum` | ✅ **CONFIRMED** `totalCalories.kcalSum`（実値 1538 kcal） |
+| identity レスポンス | `healthUserId` / `legacyUserId` | ✅ **CONFIRMED**（実 user_id 取得、`"me"` fallback せず） |
+| weight filter フィールド | `weight.sample_time.civil_time` | ✅ **CONFIRMED**（対象日の体重を正しく取得） |
+| weight 単位 | `weightGrams` /1000 | ✅ **CONFIRMED**（70.5kg、1000 倍でない） |
+| steps `steps.countSum` | — | ⚠️ **未確認**（当アカウントに歩数データ無し。生レスポンス `{}`）。camelCase パターンから推定 |
+| active-energy `activeEnergyBurned.kcalSum` | `value.kcalSum` | ⚠️ **未確認**（活動データ無し）。同上 |
+| distance `distance.meterSum`（メートル） | `value.meterSum` | ⚠️ **未確認**（距離データ無し）。同上 |
+
+> steps / active-energy / distance は wrapper キーを camelCase 型名に修正済みだが、当アカウントが歩数計未連携のため live 値で確認できていない（`{}` 応答）。歩数を Google Health に流せる端末を連携すれば後日確認できる。修正は引き続き `google_health_client.py` 内に閉じている。
+
+### live E2E で判明した実運用バグ（移行コードの周辺、2026-06-04 修正）
+
+- **cp932 クラッシュ**（commit `5d0d0fa`）: 非コンソール出力（cron `diet sync` 等）で日本語が `UnicodeEncodeError`。`cli.py` で stdout/stderr を UTF-8 化。
+- **OAuth callback タイムアウト 300→600 秒**（oauth.py）: 初回の「未確認アプリ」警告を読む間に 5 分超でリスナーが閉じ、リダイレクトが接続拒否になる UX バグ。
+- **`diet doctor` 追加**（commit `98a6bac`）: `.env`/config/token をネットワークなしで検証する preflight。
+- 環境メモ: ポート 8765 が過去の auth 残骸プロセスに占有され `WinError 10013`。再 auth 前にプロセス終了で解放。
 
 ---
 
@@ -15,7 +72,7 @@
 
 - **食事カロリー（kcal 数値）**: CLI で手入力（全食事を必ずしも記録しない前提）。記録されない時は **過去 14 日の complete day 平均**（§ 4.5）で補完。dashboard には出さないが、運動・体重から「逆算されてしまう」ことは許容する
 - **食事メニュー（note 文字列）**: ★最重要秘匿対象★ 絶対に公開しない
-- **運動データ・体重**: Fitbit Web API 経由で取得、HPasaneel に公開
+- **運動データ・体重**: Google Health API v4 経由で取得（rev 10。旧 Fitbit Web API から移行）、HPasaneel に公開
 - **基礎代謝（BMR）**: 生年月日・身長・性別と当日体重から自動算出
 - **収支**: 摂取 vs (BMR + 運動消費) を毎回算出（CLI 内のみ表示）
 - **公開**: 運動データと体重のみを HPasaneel に日次でダッシュボード公開
@@ -75,12 +132,15 @@ BMR = 10 × 体重 + 6.25 × 169 − 5 × 年齢 + 5
 
 ## 4. データソースとフロー
 
+> **rev 10:** データ取得層は Google Health API v4 に移行済み。下記フロー図・カロリー方針は rev 10 で書き換え。Renpho→Fitbit→Google Health の体重経路は **live 検証が必要**（後述）。
+
 ```
-[Renpho 体重計] ──BLE──▶ [Renpho アプリ] ──公式連携──▶ [Fitbit body/weight]
-[Fitbit デバイス] ──BLE──▶ [Fitbit アプリ] ──────────────▶ [Fitbit activities]
+[Renpho 体重計] ──BLE──▶ [Renpho アプリ] ──連携──▶ [Fitbit] ──同期──▶ [Google Health weight]
+[活動トラッカー] ──BLE──▶ [アプリ] ───────────────────────────────▶ [Google Health activity]
                                                                 │
                                                                 ▼
-                                                       [Fitbit Web API]
+                                                  [Google Health API v4]
+                                                  (health.googleapis.com)
                                                                 │
                                                                 ▼
 [CLI: diet コマンド] ◀── 食事 kcal 手入力 ── ユーザー
@@ -90,17 +150,16 @@ BMR = 10 × 体重 + 6.25 × 169 − 5 × 年齢 + 5
        └─ HPasaneel/content/diet/log.json に運動・体重のみ書き出し → git commit & push
 ```
 
-**重要な仕様 — Fitbit カロリーの取り扱い（codex 指摘の HIGH 対応）:**
+**重要な仕様 — 運動カロリーの取り扱い（rev 10 で確定、二重計上の罠を恒久解消）:**
 
-Fitbit デバイスは 24 時間装着しない前提のため、Fitbit が出す TDEE（基礎代謝込み消費）は使えない。さらに **Fitbit の `summary.activityCalories` は名前に反して基礎代謝を含む** ので、これも使わない。BMR 二重計上の罠を避ける。
+旧 Fitbit 設計では `marginalCalories` / `activities[].calories` のどちらを採用するか calibrate で選ぶ余地を残していた。Google Health API への移行に伴い、これを廃止し方針を **固定** した:
 
-採用候補（優先順）:
+- **運動消費 = `active-energy-burned`（BMR フリー、固定）。** Google の `active-energy-burned` data type は構造的に基礎代謝を含まないため、BMR 二重計上の罠を恒久的に回避できる。収支算出は **常に** これを使う。
+- **`total-calories` は診断用にのみ保存（BMR 込みの TDEE）、収支には絶対に使わない。** Fitbit デバイスを 24h 装着しない前提では TDEE は信頼できないため、参考値として `daily_activity.total_calories_kcal` に保持するだけ。
+- **distance は Google `distance` data type から取得**して保持（公開対象）。
+- `exercise_calorie_source` の source 選択ロジックは **削除**。config 列は DEPRECATED（未使用、§6 参照）。`diet calibrate` は情報表示のみ（§8 参照）。
 
-1. **`summary.marginalCalories`（デフォルト）** — Fitbit の中で「基礎代謝を引いた、活動由来っぽい消費」に最も近い。装着していない時間が長いとノイズが乗るが、構造的に基礎代謝を含まないので二重計上リスクが最小。`exercise_calorie_source` が未確定のあいだは **デフォルトで marginal を使う**
-2. **`activities[].calories`** — ユーザーが明示的に記録した運動エントリの合計。意味は明確だが、運動時間中の resting burn（基礎代謝分）を含む可能性があり、未補正だと部分的に二重計上になる。採用する場合は運動時間 × 時間当たり BMR を引いて補正するか、calibrate で実測比較した上で許容する
-3. **`summary.steps × 体重 × 係数` で独自算出** — 装着精度に依存しすぎる場合の最終 fallback
-
-**MVP は `marginalCalories` と `activities[].calories` の両方を取得して DB に保存**し、`diet calibrate` コマンド（§ 8）で数日分を並べて表示。ユーザーが calibrate で source を確定するまでは marginal を使う。確定後は config に `exercise_calorie_source` を保存して以降そちらを使う。
+**Renpho → Fitbit → Google Health の体重経路は live 検証が必要:** 旧経路（Renpho→Fitbit body/weight）が Google Health の `weight` data type に流れ込むことを前提にしているが、この連携が実際に機能するかは live E2E で未検証。同期されない場合は `diet weight 71.2` の手動入力で代替する。
 
 ---
 
@@ -199,10 +258,10 @@ WHERE has_override = 1   -- ★ complete day のみ
 
 ```
 $ diet
-[1/5 Fitbit同期] 運動データ取得中...
+[1/5 Google Health同期] 運動データ取得中...
     歩数 8,234 / 距離 5.3km
-    運動消費 280kcal (source: marginal)
-    体重 71.2kg (Renpho→Fitbit経由、2026-05-25 計測)
+    運動消費 280kcal (active-energy-burned)
+    体重 71.2kg (Renpho→Fitbit→Google Health経由、2026-05-25 計測)
 
 [2/5 食事入力] 今日のカロリー (現在の累積: 1,800kcal)
     入力 (+追加 / =上書き / Enter=skip):
@@ -231,7 +290,7 @@ $ diet
 **ポイント:**
 - 食事入力は **append（累積）** がデフォルト。`+500` で追加、`=2300` で上書き、Enter でスキップ
 - 過去日修正は `diet --date 2026-05-23` で起動、全フローが過去日で動く（年齢・体重も対象日基準）
-- Fitbit sync 失敗時は警告のみ出して食事入力に進む（オフライン耐性）
+- Google Health sync 失敗時は警告のみ出して食事入力に進む（オフライン耐性）
 - 5 ステップは順に走り、ユーザー操作が必要なのは [2] 食事入力と [5] 公開可否のみ
 
 ---
@@ -249,8 +308,9 @@ config (
   timezone               TEXT,        -- 'Asia/Tokyo'
   hpasaneel_path         TEXT,        -- 'C:/code/HPasaneel'
   hpasaneel_diet_root    TEXT,        -- 'content/diet'
-  exercise_calorie_source TEXT,       -- 'logged_activities' | 'marginal' | 'steps_estimated'
-                                      -- 初期は NULL、calibrate 後に確定
+  exercise_calorie_source TEXT,       -- ★DEPRECATED (rev 10): Google Health 移行で未使用。
+                                      -- 運動消費は常に active_energy_kcal を使うため source 選択は無い。
+                                      -- 列は schema migration 回避のため残置（常に NULL）
   bootstrap_daily_kcal   INTEGER      -- diet init で任意で入れる「普段 1 日 X kcal」
                                       -- cold start 期の fallback、未設定なら NULL
 )
@@ -267,42 +327,48 @@ intake_events (
   note          TEXT         -- ★メニュー名等。絶対秘匿、構造的に publish 不能にする
 )
 
--- Fitbit 運動データ（日次）  ← 公開対象
+-- 運動データ（日次・Google Health）  ← 公開対象
 daily_activity (
   date                       DATE PRIMARY KEY,
   steps                      INTEGER,
   distance_km                REAL,
-  -- カロリー候補を全部保存（calibration 用に並列保持）
-  logged_activities_kcal     INTEGER,  -- activities[].calories 合計
-  marginal_kcal              INTEGER,  -- summary.marginalCalories
-  -- 上記いずれかが exercise_kcal の正式値（exercise_calorie_source で選択）
+  -- rev 10: カロリー 2 列の意味が変わった
+  active_energy_kcal         INTEGER,  -- ★収支に使う正式値。active-energy-burned（BMR フリー）
+  total_calories_kcal        INTEGER,  -- 診断用のみ。total-calories（BMR 込み TDEE）。収支には使わない
   last_synced                DATETIME
 )
 
--- 体重（Renpho→Fitbit 経由・日次）  ← 公開対象
+-- 体重（Renpho→Fitbit→Google Health 経由・日次）  ← 公開対象
 daily_weight (
-  date          DATE PRIMARY KEY,    -- 計測日（測定タイムスタンプを Asia/Tokyo で日付化）
+  date          DATE PRIMARY KEY,    -- 計測日（測定タイムスタンプを civil_time で日付化）
   weight_kg     REAL,
   last_synced   DATETIME
 )
 
--- Fitbit OAuth token（atomic 更新が必須）
+-- OAuth token（atomic 更新が必須。Google Health の token を格納）
+-- ★テーブル名は歴史的に fitbit_token のまま（rev 10 で migration 回避のため改名せず）
 fitbit_token (
   id             INTEGER PRIMARY KEY CHECK (id = 1),  -- 単一行を強制
   access_token   TEXT,
   refresh_token  TEXT,
   expires_at     DATETIME,
-  user_id        TEXT,
+  user_id        TEXT,    -- identity の healthUserId（解決失敗時 "me"）
   rotated_at     DATETIME
 )
 ```
+
+**rev 10 — v1（Fitbit）→ v2（Google Health）migration:**
+- `daily_activity.marginal_kcal` → `active_energy_kcal`、`daily_activity.logged_activities_kcal` → `total_calories_kcal` に **列リネーム**（`ALTER TABLE ... RENAME COLUMN`、`db._migrate` で冪等実行）。
+- 旧 Fitbit token は Google に **転用不能** なので、v1→v2 で `fitbit_token` を `DELETE`（wipe）。ユーザーは `diet auth` で Google に再認証する必要がある。
+- `user_id` は OAuth 時に `GET /users/me/identity` で解決した値を格納。refresh 時もこの値を carry forward する（refresh で `"me"` に上書きしないよう `cli_helpers.refresh()` が明示的に渡す）。
+- ★**移行された v1 行の注意（コードレビュー指摘）:** migration で `total_calories_kcal` にリネームされた旧 `logged_activities_kcal` の値は、Fitbit で「明示的に記録した運動エントリ合計（logged activities）」であって、**真の BMR 込み TDEE ではない**。`total-calories` の本来のセマンティクス（BMR 込み TDEE）を持つのは **Google から sync された行のみ**。将来このデータを読む人は、移行済み v1 行の `total_calories_kcal` を TDEE として信頼してはならない。
 
 **設計判断:**
 - **収支・BMR は保存しない** → 毎回算出（体重訂正で過去日が自動的に正しい値になる）
 - **食事は append 履歴** → 全イベントを残し、`op='override'` も含めて履歴追跡可能
 - **公開境界の物理分離** → § 7 で詳述。publish 関数は `daily_activity` と `daily_weight` のみ SELECT し、`intake_events` に触らないことをユニットテストで担保（特に `note` が漏れない保証が最重要）
 - **time zone は Asia/Tokyo 固定** → 日付境界は JST の 0 時
-- **Fitbit カロリー候補を 2 列で保存** → calibration 期間中も後追いでも比較可能
+- **カロリー 2 列の役割（rev 10）** → `active_energy_kcal` が収支に使う正式値（BMR フリー）、`total_calories_kcal` は診断用の参考値（BMR 込み TDEE、収支には使わない）
 
 ---
 
@@ -422,35 +488,37 @@ git push          # → Cloudflare Pages auto deploy
 
 ## 8. 初回セットアップ + calibration
 
-### 1. Fitbit Developer App 登録（ユーザー手動・1 回のみ）
+### 1. Google Cloud Console での OAuth クライアント登録（ユーザー手動・1 回のみ、rev 10）
 
-`https://dev.fitbit.com/apps` で "Register a new application" から以下を入力:
+`https://console.cloud.google.com` で以下を順に実施:
 
-| フィールド | 値 | 備考 |
-|---|---|---|
-| Application Name | `Personal Diet CLI` 等 | 任意 |
-| Description | `Personal use diet tracking via Fitbit activity and weight data` | 任意 |
-| Application Website | 任意の HTTPS URL（自分の GitHub 等）| HTTPS 必須 |
-| Organization | 自分の名前 | 個人なので任意 |
-| Organization Website | 同上 | HTTPS 必須 |
-| Terms of Service URL | 同上 | HTTPS 必須 |
-| Privacy Policy URL | 同上 | HTTPS 必須 |
-| **OAuth 2.0 Application Type** | **Personal** ★ | これ以外は審査必要 |
-| **Callback URL** | **`https://localhost:8765/callback`** ★ | Fitbit は HTTPS のみ受付 |
-| **Default Access Type** | **Read-only** | 書き込みは使わない |
-
-登録完了後 `https://dev.fitbit.com/apps` で自分のアプリを開くと **Client ID** と **Client Secret** が表示される。それを `.env` に保存:
+1. **プロジェクト作成** — 任意の名前（例 `personal-diet-cli`）。
+2. **Google Health API を有効化** — 「API とサービス」→「ライブラリ」で Google Health API を検索し有効化。
+3. **OAuth 同意画面（OAuth consent screen）を設定** — User Type は External。
+   - ★**公開ステータスは必ず「本番環境（Production）」に発行**する。Testing のままだと **refresh token が 7 日で失効** し、毎週 `diet auth` し直す羽目になる。
+   - 単一ユーザー利用（< 100 ユーザー上限）なので、第三者によるセキュリティレビュー（security assessment）は不要。
+   - **テストユーザーに自分の Gmail（`pcjidouka@gmail.com`）を追加**する。
+   - scope は以下 2 つ（read-only）:
+     - `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`
+     - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
+4. **OAuth クライアント ID を作成** — 「認証情報」→「認証情報を作成」→「OAuth クライアント ID」。
+   - **アプリケーションの種類: ウェブアプリケーション（Web application）**。
+   - **承認済みのリダイレクト URI に `http://localhost:8765/callback` を登録**。Google は `localhost` を HTTPS-only ルールから除外するので **PLAIN HTTP で良い**（自己署名証明書は不要）。
+5. 作成後に表示される **クライアント ID** と **クライアント シークレット** をプロジェクトルートの `.env` に保存:
 
 ```
-FITBIT_CLIENT_ID=23XXXX
-FITBIT_CLIENT_SECRET=abc123def456...
-FITBIT_REDIRECT_URI=https://localhost:8765/callback
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8765/callback
 ```
 
-### 2. Renpho → Fitbit 同期設定（ユーザー手動・1 回のみ）
+> rev 9 までの Fitbit Developer App（`dev.fitbit.com`、`FITBIT_*` env、HTTPS callback + 自己署名証明書）は rev 10 で全廃。
+
+### 2. Renpho → Fitbit → Google Health 体重同期設定（ユーザー手動・1 回のみ）
 
 - Renpho アプリ → 設定 → サードパーティ連携 → Fitbit を選択して認可
-- 以降、Renpho 計測のたびに自動で Fitbit 側 body/weight に流れる
+- 以降、Renpho 計測のたびに自動で Fitbit 側 body/weight に流れ、さらに Google Health の `weight` data type に同期される（想定）
+- ★この多段経路（Renpho→Fitbit→Google Health）が実際に体重を流すかは **live E2E で要検証**。流れない場合は `diet weight 71.2` の手動入力で代替
 
 ### 3. `diet init`
 
@@ -466,41 +534,32 @@ HPasaneel ダッシュボードルート [content/diet]:
   > 2000
 
 → data/diet.db 作成、config 保存 (bootstrap_daily_kcal=2000)
-→ **自己署名 TLS 証明書を生成** (data/oauth_cert.pem, data/oauth_key.pem)
-→ Fitbit OAuth フロー起動（ブラウザが開く）
-→ 初回のみブラウザが証明書警告を出すので「Advanced → Proceed to localhost (unsafe)」で進む
-→ https://localhost:8765/callback で token 受け取り → DB 保存
-→ 初回 sync 実行（過去 30 日分を遡って取得、カロリー 2 候補を両方保存）
-→ 「次に `diet calibrate` を実行して exercise_kcal の値を決めてください」と案内
+→ Google OAuth フロー起動（ブラウザが開く。証明書警告のステップは無い — PLAIN HTTP loopback）
+→ Google アカウントで認可 → http://localhost:8765/callback で token 受け取り
+→ identity から user_id 解決 → DB 保存
+→ 初回 sync 実行（過去 30 日分を遡って取得、active-energy / total-calories / steps / distance / weight）
+→ 「`diet calibrate` で直近の活動カロリーを確認できます」と案内（情報表示のみ）
 ```
 
 bootstrap baseline は **complete day が 3 件未満（SAMPLE_FLOOR）の cold start 期** だけ使われる。complete day が貯まれば自動的に past_avg が優先される。後から `diet baseline 2200` で更新可能（rev 7 で CLI 追加、§ 9 参照）。
 
-### 4. `diet calibrate`（codex Scope 対応：新規追加コマンド）
+### 4. `diet calibrate`（rev 10 で **情報表示のみ** に変更）
 
-過去 N 日（デフォルト 14 日）の Fitbit カロリー値を並べて表示し、ユーザーが「どのフィールドを `exercise_kcal` として採用するか」を決める:
+旧 calibrate は source 選択（marginal / logged_activities）を行うコマンドだったが、rev 10 で運動消費が `active-energy-burned` 固定になったため、**source 選択機能は廃止**。現在は過去 N 日（デフォルト 14 日）の活動カロリーを並べて **見るだけ** のコマンド:
 
 ```
 $ diet calibrate
-過去 14 日の Fitbit カロリー比較:
-
-date         steps  距離km  logged_activities  marginal  装着時間
-2026-05-25   8234    5.3    280                340       18h
-2026-05-24  12100    7.8    420                550       21h
-2026-05-23   3200    2.1     90                120       12h  ← 装着少
-2026-05-22  14500    9.2    480                600       23h
+過去 14 日の活動カロリー（参考表示）:
+date            steps  distance_km  active_energy  total_calories
+2026-05-25      8,234          5.3            280            1,920
+2026-05-24     12,100          7.8            420            2,180
 ...
 
-各カロリー候補の意味:
-  - logged_activities: ウォーキング・ランニング等を明示的に記録した分の合計
-  - marginal:          Fitbit が「活動由来」と推定した分（基礎代謝込みではない）
-
-どちらを exercise_kcal として採用しますか? [logged_activities/marginal/decide_later]:
-> marginal
-→ config.exercise_calorie_source = 'marginal' に保存
+運動カロリーは active_energy（基礎代謝を除いた活動由来の消費）を使用します。
+total_calories（基礎代謝を含む総消費）は参考値で、収支計算には使いません。
 ```
 
-`decide_later` を選ぶと毎日両方表示しつつ収支は marginal で仮計算、`diet calibrate` でいつでも変更可能。
+- `--days N` で表示期間を変更可能。プロンプトも config 書き込みも無い（純粋な表示）。
 
 ---
 
@@ -513,8 +572,9 @@ C:/code/fitbit連動ダイエット/
       __init__.py
       __main__.py        # diet コマンド本体（対話フロー orchestrator）
       cli.py             # click/typer 定義（下記コマンド一覧参照）
-      fitbit_client.py   # Fitbit Web API ラッパー + rate limit tracking
-      oauth.py           # OAuth フロー + HTTPS localhost callback server + 自己署名証明書生成 + atomic token rotation
+      google_health_client.py  # Google Health API v4 ラッパー（rev 10。dailyRollUp / weight。ASSUMED フィールドはここに隔離）
+      cli_helpers.py     # sync ループ + refresh ハンドリング（RefreshTokenError / TransientRefreshError 振り分け）
+      oauth.py           # Google OAuth 2.0 フロー + PLAIN HTTP loopback callback server + identity 解決 + atomic token rotation（rev 10。自己署名証明書は廃止）
       bmr.py             # BMR 計算（純粋関数、target_date 引数で過去日対応）
       intake.py          # 食事 kcal 算出（recorded_sum / past_avg / final intake_kcal の純粋関数）
       db.py              # SQLite 接続・スキーマ管理
@@ -530,9 +590,8 @@ C:/code/fitbit連動ダイエット/
     ...
   data/                  # .gitignore
     diet.db
-    oauth_cert.pem       # 自己署名 TLS 証明書 (diet init で自動生成、有効期間 10 年)
-    oauth_key.pem        # その秘密鍵
-  .env                   # .gitignore（Client ID / Secret）
+    # rev 10: 自己署名 TLS 証明書 (oauth_cert.pem / oauth_key.pem) は廃止（PLAIN HTTP loopback）
+  .env                   # .gitignore（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI）
   .env.example
   pyproject.toml         # uv 管理
   README.md
@@ -552,11 +611,11 @@ C:/code/HPasaneel/
 |---|---|
 | `diet` | 1 日分の対話フロー（Fitbit sync → 食事入力 → 収支 → publish） |
 | `diet --date 2026-05-23` | 過去日対象で対話フロー実行 |
-| `diet init` | 初期セットアップ（profile + OAuth + 初回 sync） |
-| `diet auth` | OAuth token を再取得（refresh 完全失敗時の復旧） |
-| `diet calibrate` | Fitbit カロリー候補を並べて `exercise_calorie_source` を決定 |
+| `diet init` | 初期セットアップ（profile + Google OAuth + 初回 sync） |
+| `diet auth` | Google OAuth token を再取得（refresh 完全失敗時の復旧。rev 10 で `--regen-cert` は廃止） |
+| `diet calibrate` | 直近 N 日の活動カロリーを表示（rev 10 で **情報表示のみ**、source 選択は廃止） |
 | `diet weight 71.2` | 体重を手動入力（Renpho 同期不全時の fallback、当日 or `--date` 指定可） |
-| `diet sync` | Fitbit sync のみ実行（対話なし、cron 用） |
+| `diet sync` | Google Health sync のみ実行（対話なし、cron 用） |
 | `diet show [--date YYYY-MM-DD]` | 指定日（デフォルト今日）の収支を表示のみ（食事入力・publish なし） |
 | `diet baseline 2200` | bootstrap_daily_kcal の更新（cold start 期の見直し用） |
 
@@ -566,12 +625,13 @@ C:/code/HPasaneel/
 
 ### Python（`pyproject.toml`）
 
-- `httpx` — Fitbit API HTTP クライアント
+- `httpx` — Google Health API / OAuth token endpoint の HTTP クライアント
 - `python-dotenv` — `.env` 読み込み
-- `click` または `typer` — CLI フレームワーク
+- `click` — CLI フレームワーク
 - `jsonschema` — 公開 JSON の schema guard
-- `cryptography` — 自己署名 TLS 証明書の生成（OAuth callback サーバー用）
-- 標準ライブラリ: `sqlite3`, `datetime`, `zoneinfo`, `http.server`, `ssl`, `subprocess`, `dataclasses`
+- 標準ライブラリ: `sqlite3`, `datetime`, `zoneinfo`, `http.server`, `subprocess`, `dataclasses`
+
+> rev 10: `cryptography`（自己署名証明書生成用）と `ssl` の使用は廃止（PLAIN HTTP loopback callback）。
 
 パッケージマネージャは **uv**。`uv tool install .` でグローバルに `diet` コマンドを入れる。
 
@@ -585,10 +645,11 @@ C:/code/HPasaneel/
 
 | 状況 | 動作 |
 |---|---|
-| Fitbit token 期限切れ | refresh token で自動更新、**新 token を DB に commit してから API call** に進む（single-use token rotation 対応）。401 の自動 retry は **1 回のみ** |
-| token rotation 中のプロセス crash | 完全には防げないが緩和: (1) DB 書き込みを `BEGIN IMMEDIATE` transaction で atomic 化、(2) refresh 開始前に `flock` 相当のプロセスロック取得で並列 refresh 防止、(3) crash で新 refresh token を失った時は次回起動で `diet auth` 再認証を促す（古い single-use token は既に Fitbit 側で無効化されてる前提）|
-| ネットワーク失敗 | Fitbit sync をスキップして警告、食事入力には進む（オフライン耐性）。publish もスキップ |
-| Fitbit Rate Limit (150/h) | リクエスト数を自前カウント、`Fitbit-Rate-Limit-Reset` ヘッダを尊重。429 受領時は次回 reset まで sync 待機（食事入力は通常通り）|
+| access token 期限切れ | refresh token で自動更新、**新 token を DB に commit してから API call** に進む。401 の自動 retry は **1 回のみ**（`GoogleHealthClient.on_unauthorized`）。Google は refresh レスポンスで refresh_token を省略するので **既存値を carry forward** |
+| refresh token が無効（invalid_grant）| `RefreshTokenError` として escape し、`diet auth` での再認証を案内（ユーザーが直せる失敗） |
+| token endpoint の一時障害（5xx / 429 / invalid_client / ネットワーク失敗）| `TransientRefreshError` として escape し、「時間をおいて再試行」を案内（ユーザーに auth 修正手段なし）。per-day の `except Exception` には飲み込ませない |
+| ネットワーク失敗 | Google Health sync をスキップして警告、食事入力には進む（オフライン耐性）。publish もスキップ |
+| Google Health Rate Limit | レスポンスに rate-limit ヘッダは無い。per-user 上限はおおむね **300 req/min**。単一ユーザーの 30 日 sync は **約 150 リクエスト**（1 日あたり rollup 3 種 + distance + weight ≒ 5 req × 30 日）で上限を十分下回る。429 受領時は単発の per-day 失敗として警告し継続 |
 | 当日体重が Renpho 未同期 | **対象日以前**の最新体重を使う（タイムマシン禁止）、「N 日前 (71.5kg) を使用」と警告 |
 | 30 日以上前まで遡っても体重無し | `diet weight 71.2` での手動入力を促す |
 | 食事 0 kcal（断食日） | 許可 |
@@ -601,11 +662,10 @@ C:/code/HPasaneel/
 | `content/diet/log.json` に手動変更あり | 「log.json を上書きしますか? [y/N]」確認。no なら publish 中止 |
 | `git pull --rebase` 失敗 | 手動解決を促して publish 中止（diet は exit code 非 0 で終了）|
 | `git push` 失敗 | エラー出力をそのまま表示、手動解決を促す |
-| Fitbit 未装着（steps=0） | そのまま記録。BMR だけの収支になる（24h 装着しない前提を尊重） |
+| デバイス未装着（steps=0） | そのまま記録。BMR だけの収支になる（24h 装着しない前提を尊重） |
 | `diet init` 未実行で `diet` を実行 | 「先に `diet init` を実行してください」と案内 |
-| 自己署名証明書の有効期限切れ | `diet auth` または `diet init --regen-cert` で再生成 |
-| ポート 8765 が使用中 | `diet init --port 8888` 等で代替指定可、変更時は Fitbit dev portal の Callback URL も更新が必要 |
-| `diet calibrate` 未実行で `diet` を実行 | `marginal` を暫定使用しつつ「`diet calibrate` を推奨」警告 |
+| ポート 8765 が使用中 | `diet init --port 8888` 等で代替指定可。変更時は **Google Cloud Console の OAuth クライアントの承認済みリダイレクト URI** も同ポートに更新が必要 |
+| `diet calibrate` は情報表示のみ | rev 10 で source 選択廃止のため、未実行でも収支算出に影響しない（運動消費は常に active-energy-burned） |
 
 ---
 
@@ -656,8 +716,8 @@ C:/code/HPasaneel/
   - refresh 成功時の DB 保存が atomic（部分書き込みで壊れない、`BEGIN IMMEDIATE`）
   - rotation 中の crash 後の再起動で正しい復旧パス（`diet auth` 案内）
   - 並列 `diet` 実行でも同時 refresh が起きないこと（プロセスロック動作）
-- **`fitbit_client.py`** — httpx mock で OAuth・rate limit・API レスポンス処理
-- **`db.py`** — テンポラリ SQLite でスキーマ migration テスト
+- **`google_health_client.py`** / **`cli_helpers.py`** — httpx mock で OAuth・dailyRollUp / weight レスポンス処理・refresh 分岐（RefreshTokenError vs TransientRefreshError）をテスト
+- **`db.py`** — テンポラリ SQLite でスキーマ + v1→v2 migration（列リネーム + token wipe）テスト
 - 全体結合テストは VCR.py のような HTTP リプレイで（実 API は叩かない）
 
 ---
@@ -677,14 +737,27 @@ C:/code/HPasaneel/
 ## 14. 未確定事項（実装中に決める or 後追い）
 
 - OAuth callback port `8765` の競合可否確認（競合時は --port オプションで代替）
-- 自己署名証明書の有効期間（10 年デフォルト）と更新フロー
 - log.json のレコード数上限（数年運用後の bundle サイズ対策。1 年 365 行で十分小さいので当面気にしない）
 - ダッシュボード UI の具体デザイン（HPasaneel の既存トーンに合わせる）
-- `exercise_calorie_source` の最終決定は MVP 出荷後 2 週間の calibrate 期間で確定
+- ★**rev 10 ASSUMED フィールドの live E2E 検証**（distance `meterSum` / total-calories `kcalSum` / identity `healthUserId`/`legacyUserId` / weight filter `weight.sample_time.civil_time` / rollup `value` の直キー）— rev 10 amendment の表参照。Task 6 の live-E2E チェックリストで実施
+- ★**Renpho→Fitbit→Google Health の体重同期経路** が実際に機能するかの live 検証（§4 / §8.2）
+- ~~自己署名証明書の有効期間と更新フロー~~ → rev 10 で証明書廃止（PLAIN HTTP loopback）、本項目は解消
+- ~~`exercise_calorie_source` の calibrate 期間での最終決定~~ → rev 10 で運動消費を active-energy-burned 固定とし、source 選択を廃止。本項目は解消
 
 ---
 
 ## 付録 A: codex review 反映ログ
+
+### rev 10 (2026-06-01) — Google Health API 移行
+| 変更内容 | 反映場所 |
+|---|---|
+| Fitbit Web API → Google Health API v4 全面移行（5 設計判断）| 冒頭 rev 10 amendment（確定 API 契約 + ASSUMED フィールド表）、§1 / §4 データフロー、§5 対話表示 |
+| 運動消費 = active-energy-burned 固定（BMR フリー）、total-calories 診断用のみ | §4 カロリー方針、§6 daily_activity 列、§6 設計判断 |
+| OAuth を標準 Google OAuth 2.0 に、PLAIN HTTP loopback、自己署名証明書 + `cryptography` 廃止 | rev 10 amendment、§8.1 GCP Console 登録、§8.3 init フロー、§9 構成、§10 依存、§11 cert 行削除 |
+| calibrate を情報表示のみに（source 選択廃止）、`exercise_calorie_source` を DEPRECATED 化 | §8.4 calibrate、§6 config 列、§9 CLI 表、§11、§14 |
+| v1→v2 DB migration（列リネーム + 移行不能な旧 token wipe + identity の user_id 充填）| §6 migration 節（migrated v1 行の total_calories_kcal を TDEE と信頼しない注記含む）、§12 db テスト |
+| Google Health のレート上限（rate-limit ヘッダ無し、300 req/min、30 日 sync ≒ 150 req）| §11 rate limit 行 |
+| ASSUMED フィールド（distance meterSum / total-calories kcalSum / identity / weight filter / rollup value 直キー）は live E2E 未検証 | rev 10 amendment ASSUMED 表、§14 |
 
 ### rev 2 (2026-05-25)
 | codex 指摘 | 反映場所 |
