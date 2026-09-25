@@ -1,3 +1,8 @@
+---
+type: readme
+title: "Fitbit 連動ダイエット CLI"
+---
+
 # Fitbit 連動ダイエット CLI
 
 「食べた分だけ歩く・走る」をパーソナル運用するための CLI。**Google Health API v4** で取得した運動・体重データに、CLI で手入力した食事カロリーを突き合わせて毎日の収支を算出し、運動・体重のみを HPasaneel ダッシュボードに公開する。

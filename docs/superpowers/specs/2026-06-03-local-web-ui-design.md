@@ -1,3 +1,9 @@
+---
+type: decision
+status: stable
+title: "ローカル Web UI（毎日フローのブラウザ化）— 設計書"
+---
+
 # ローカル Web UI（毎日フローのブラウザ化）— 設計書
 
 - 作成日: 2026-06-03

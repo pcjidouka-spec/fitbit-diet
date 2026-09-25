@@ -1,3 +1,9 @@
+---
+type: decision
+status: stable
+title: "自宅 PC ブラウザ smoke チェックリスト — `diet serve`（Web UI）"
+---
+
 # 自宅 PC ブラウザ smoke チェックリスト — `diet serve`（Web UI）
 
 - 作成日: 2026-06-03

@@ -1,3 +1,9 @@
+---
+type: decision
+status: stable
+title: "Fitbit 連動ダイエット CLI 実装計画 (rev 2)"
+---
+
 # Fitbit 連動ダイエット CLI 実装計画 (rev 2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,3 +1,9 @@
+---
+type: decision
+status: stable
+title: "Google Health API 移行 — Live E2E 検証チェックリスト"
+---
+
 # Google Health API 移行 — Live E2E 検証チェックリスト
 
 - 作成日: 2026-06-01

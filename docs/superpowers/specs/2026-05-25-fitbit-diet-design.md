@@ -1,3 +1,9 @@
+---
+type: decision
+status: stable
+title: "Fitbit 連動ダイエット CLI — 設計書"
+---
+
 # Fitbit 連動ダイエット CLI — 設計書
 
 - 作成日: 2026-05-25
